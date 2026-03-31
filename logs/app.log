@@ -16,3 +16,9 @@ nohup: ignoring input
 [2026-04-01 02:45:06] [INFO] [bootstrap] daily market analysis card sent
 [2026-04-01 02:45:06] [INFO] [main] scheduler started
 [2026-04-01 02:45:06] [INFO] [scheduler.daily] next run at 2026-04-01 09:00:00 CST, waiting 22493 seconds
+[2026-04-01 02:49:52] [INFO] [bootstrap] cls telegraph llm analyzed successfully, event_id=d12cc778ab779fb445002188986d100c, score=0
+[2026-04-01 02:49:52] [INFO] [feishu.notifier] sending feishu interactive card
+[2026-04-01 02:49:53] [INFO] [feishu.notifier] feishu card sent successfully
+[2026-04-01 02:49:53] [INFO] [bootstrap] cls telegraph insert card sent successfully, event_id=d12cc778ab779fb445002188986d100c
+[2026-04-01 02:49:53] [INFO] [bootstrap] cls telegraphs synced successfully, upsert_count=1, llm_success=1, llm_failed=0, insert_card_success=1, insert_card_failed=0, latest_publish_ts=1774982827, send_insert_card=True
+[2026-04-01 02:54:53] [INFO] [bootstrap] no new cls telegraphs to analyze and upsert
