@@ -1,0 +1,18 @@
+nohup: ignoring input
+[2026-04-01 02:44:46] [INFO] [feishu.notifier] feishu session started
+[2026-04-01 02:44:46] [WARNING] [bootstrap] daily scheduler has no startup()/start() method, skip starting
+[2026-04-01 02:44:50] [INFO] [bootstrap] cls telegraph llm analyzed successfully, event_id=a981f1f77e910e349b8971a6a0236b25, score=15
+[2026-04-01 02:44:50] [INFO] [bootstrap] cls telegraphs synced successfully, upsert_count=1, llm_success=1, llm_failed=0, insert_card_success=0, insert_card_failed=0, latest_publish_ts=1774982556, send_insert_card=False
+[2026-04-01 02:44:50] [INFO] [main] run startup market analysis task once
+[2026-04-01 02:44:50] [INFO] [bootstrap] start fetching morning market data
+[2026-04-01 02:44:50] [INFO] [bootstrap] morning data fetched successfully, date=2026-03-31, raw_content_len=4888
+[2026-04-01 02:44:50] [INFO] [bootstrap] start fetching previous day review
+[2026-04-01 02:44:50] [INFO] [bootstrap] previous day review fetched successfully, review_len=3284
+[2026-04-01 02:44:50] [INFO] [bootstrap] start llm analysis for morning market data
+[2026-04-01 02:45:05] [INFO] [bootstrap] llm analysis finished, analysis_len=837
+[2026-04-01 02:45:06] [INFO] [feishu.notifier] feishu tenant_access_token refreshed
+[2026-04-01 02:45:06] [INFO] [feishu.notifier] sending feishu interactive card
+[2026-04-01 02:45:06] [INFO] [feishu.notifier] feishu card sent successfully
+[2026-04-01 02:45:06] [INFO] [bootstrap] daily market analysis card sent
+[2026-04-01 02:45:06] [INFO] [main] scheduler started
+[2026-04-01 02:45:06] [INFO] [scheduler.daily] next run at 2026-04-01 09:00:00 CST, waiting 22493 seconds
