@@ -9,6 +9,114 @@ from pydantic import BaseModel, Field, ValidationError
 from app.config import settings
 
 
+SECTOR_WHITELIST = [
+    "半导体", "白酒", "白色家电", "保险", "包装印刷", "厨卫电器", "电池", "电机", "电力", "电网设备", "多元金融", "电子化学品",
+    "房地产", "风电设备", "非金属材料", "服装家纺", "纺织制造", "工程机械", "光伏设备", "贵金属", "轨交设备", "港口航运", "公路铁路运输", "钢铁", "光学光电子", "工业金属",
+    "环保设备", "环境治理", "互联网电商", "黑色家电", "化学纤维", "化学原料", "化学制品", "化学制药", "化学制品", "化学制药", "IT服务", "机场航运", "军工电子", "军工装备", "家居用品", "计算机设备",
+    "金属新材料", "教育", "建筑材料", "建筑装饰",
+    "零售", "旅游及酒店", "美容护理", "煤炭开采加工", "贸易", "农产品加工", "农化制品", "能源金属",
+    "汽车服务及其他", "汽车零部件", "汽车整车", "其他电源设备", "其他电子", "其他社会服务", "软件开发", "燃气", "塑料制品", "食品加工制造", "生物制品", "石油加工贸易",
+    "通信服务", "通信设备", "通用设备",
+    "文化传媒", "物流", "消费电子", "小家电", "小金属", "橡胶制品", "元件", "医疗服务", "医疗器械", "饮料制造", "油气开采及服务", "影视院线", "游戏", "银行", "医药商业",
+    "养殖业", "自动化设备", "综合", "证券", "中药", "专用设备", "造纸", "种植业与林业",
+]
+SECTOR_WHITELIST = list(dict.fromkeys(SECTOR_WHITELIST))
+SECTOR_SET = set(SECTOR_WHITELIST)
+SECTOR_WHITELIST_TEXT = "、".join(SECTOR_WHITELIST)
+
+SECTOR_ALIASES = {
+    "猪肉": "养殖业",
+    "生猪": "养殖业",
+    "猪价": "养殖业",
+    "猪周期": "养殖业",
+    "养猪": "养殖业",
+    "养殖": "养殖业",
+    "白电": "白色家电",
+    "航运": "港口航运",
+    "集运": "港口航运",
+    "港口": "港口航运",
+    "航空": "机场航运",
+    "机场": "机场航运",
+    "石油石化": "石油加工贸易",
+    "炼化": "石油加工贸易",
+    "炼油": "石油加工贸易",
+    "油气": "油气开采及服务",
+    "天然气": "油气开采及服务",
+    "煤炭": "煤炭开采加工",
+    "券商": "证券",
+    "传媒": "文化传媒",
+    "影视": "影视院线",
+    "白酒": "白酒",
+    "消费电子": "消费电子",
+    "光伏": "光伏设备",
+    "锂电": "电池",
+    "半导体": "半导体",
+    "芯片": "半导体",
+    "汽车零部件": "汽车零部件",
+    "整车": "汽车整车",
+    "创新药": "化学制药",
+    "仿制药": "化学制药",
+    "中药": "中药",
+    "疫苗": "生物制品",
+    "医疗器械": "医疗器械",
+    "医药商业": "医药商业",
+    "CXO": "医疗服务",
+    "cxo": "医疗服务",
+    "军工": "军工装备",
+    "军工电子": "军工电子",
+    "军工装备": "军工装备",
+    "稀土": "小金属",
+    "黄金": "贵金属",
+    "铜": "工业金属",
+    "铝": "工业金属",
+    "锌": "工业金属",
+    "锂": "能源金属",
+    "镍": "能源金属",
+    "钴": "能源金属",
+    "软件": "软件开发",
+    "通信": "通信设备",
+}
+
+CONTENT_SECTOR_RULES = [
+    (r"(冻猪肉|收储|生猪|猪粮比|猪价|母猪)", "养殖业"),
+    (r"(券商|证券公司)", "证券"),
+    (r"(煤炭|动力煤|焦煤|焦炭)", "煤炭开采加工"),
+    (r"(原油|油气|天然气勘探|油田|钻井)", "油气开采及服务"),
+    (r"(石化|炼油|成品油)", "石油加工贸易"),
+    (r"(白酒|茅台|五粮液)", "白酒"),
+    (r"(电影|票房|院线)", "影视院线"),
+    (r"(游戏|版号)", "游戏"),
+    (r"(航运|集运|港口)", "港口航运"),
+    (r"(机场|航空公司|客运航线)", "机场航运"),
+    (r"(消费电子|手机|耳机|平板|可穿戴)", "消费电子"),
+    (r"(光伏|组件|硅片|电池片)", "光伏设备"),
+    (r"(锂电|电芯|储能电池)", "电池"),
+    (r"(半导体|芯片|晶圆|封测)", "半导体"),
+    (r"(机器人|工业自动化|自动化产线)", "自动化设备"),
+    (r"(创新药|新药|药品获批|仿制药)", "化学制药"),
+    (r"(中药|中成药)", "中药"),
+    (r"(疫苗|血制品|生物制药)", "生物制品"),
+    (r"(医疗器械|器械)", "医疗器械"),
+    (r"(SaaS|操作系统|数据库|软件)", "软件开发"),
+    (r"(通信设备|光模块|基站|交换机)", "通信设备"),
+]
+
+STRONG_POSITIVE_KEYWORDS = [
+    "收储", "补贴", "回购", "增持", "中标", "签约", "获批", "批准", "订单",
+    "提价", "涨价", "上调", "降息", "降准", "减税", "免税", "落地", "正式实施",
+    "量产", "突破", "首个", "首次", "扩产", "投产", "并购", "收购", "超预期",
+]
+STRONG_NEGATIVE_KEYWORDS = [
+    "处罚", "立案", "违约", "爆雷", "停产", "召回", "减持", "制裁", "封禁",
+    "禁运", "退市", "裁员", "下修", "终止", "取消订单", "砍单", "亏损扩大",
+    "暴雷", "调查", "断供", "事故", "停牌",
+]
+OFFICIAL_KEYWORDS = [
+    "国务院", "国家发改委", "发改委", "财政部", "工信部", "商务部",
+    "央行", "证监会", "国家能源局", "农业农村部", "卫健委",
+]
+
+
 def _get_setting(*names, required: bool = False, default=None):
     for name in names:
         value = getattr(settings, name, None)
@@ -34,13 +142,11 @@ def _build_client():
         required=True,
     )
 
-
     return OpenAI(
         api_key=api_key,
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         timeout=90.0,
     )
-
 
 
 class CLSTelegraphLLMAnalysis(BaseModel):
@@ -72,10 +178,12 @@ class CLSTelegraphLLMAnalysis(BaseModel):
         }
 
 
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT = f"""
 你是一个面向 A 股事件驱动交易与舆情研判的“财联社电报分析助手”。
 
-你的任务不是概括新闻本身，而是判断这条财联社电报对“A 股市场的可交易价值和净影响方向”。
+你的任务不是概括新闻本身，而是判断这条财联社电报在未来 1~3 个交易日内，
+是否会推动 A 股相关板块/公司上涨或下跌，以及这种方向判断的把握有多高。
+
 你必须先在内部做尽可能详细、彻底、结构化的分析，再压缩为最终输出。
 但最终仍然只能输出一个 JSON 对象，不能输出任何额外说明、不能 markdown、不能代码块。
 
@@ -87,17 +195,28 @@ SYSTEM_PROMPT = """
 - 整数
 - 范围必须在 -100 到 100
 - 允许使用 1 分档，即任意整数都可以
-- 含义：
-  - 100：极强利好 A 股
-  - 50：中度利好 A 股
-  - 0：中性 / 影响不明确 / 与 A 股关系弱
-  - -50：中度利空 A 股
-  - -100：极强利空 A 股
+- 含义不是“新闻重要性”，而是“未来 1~3 个交易日股价方向判断的概率和把握”
+- score > 0：上涨概率/把握
+- score < 0：下跌概率/把握
+- abs(score) 越大，代表方向越明确、交易胜率越高、越容易被盘面交易
+- score = 0：仅限完全无明确方向、无法映射到 A 股、或纯噪音信息
+
+你必须按下面语义理解分数：
+- +95 ~ +100：极高把握，近乎明牌强催化
+- +90 ~ +94：非常高把握，极可能引发强势上涨
+- +80 ~ +89：高把握，大概率上涨
+- +70 ~ +79：较高把握，较大概率上涨
+- +60 ~ +69：中高把握，有明显上涨概率
+- +40 ~ +59：中等把握，有交易价值但不是高胜率
+- +20 ~ +39：偏弱正向，有一定上涨预期但不强
+- +1 ~ +19：仅轻微正向
+- 0：无明确方向
+- 负分完全对称理解为下跌概率与把握
 
 2. reason
 - 简洁说明打分理由
 - 不要太长，2~4句以内
-- 理由要尽量体现“事件 -> 传导路径 -> 对 A 股的影响强弱/范围/确定性”
+- 理由必须体现“事件 -> 传导路径 -> A 股交易方向/确定性”
 - 理由里优先写最核心的判断依据，不要写空话，不要只复述新闻
 
 3. companies
@@ -108,9 +227,13 @@ SYSTEM_PROMPT = """
 
 4. sectors
 - 数组或 null
-- 填写涉及的 A 股板块 / 概念 / 行业
-- 优先使用 A 股常见表述，避免过于宽泛
-- 没有就返回 null
+- 只能从下面这份标准板块名单中选择，必须原词输出
+- 不允许输出概念词、题材词、自造组合词、产业链描述
+- 最多返回 3 个，按相关性从高到低排序
+- 若确实无法映射到标准板块，才返回 null
+
+标准板块名单：
+{SECTOR_WHITELIST_TEXT}
 
 你必须遵循以下规则（这些规则只用于内部分析，不要直接原样输出）：
 
@@ -119,420 +242,77 @@ SYSTEM_PROMPT = """
 ====================
 你评估的不是“新闻本身是否重大”，而是：
 1. 该消息能否传导到 A 股
-2. 该消息对 A 股是利好还是利空
-3. 这种影响有多强、多广、多确定、多可交易
-4. 市场是否可能围绕该消息形成板块交易、个股交易或风险偏好变化
+2. 这条消息会不会被市场当成短线交易催化
+3. 它更像是情绪修复、预期强化、趋势延续，还是趋势破坏、风险释放
+4. 最终相关板块/公司在未来 1~3 个交易日上涨或下跌的概率与把握有多高
 
-评分反映的是“对 A 股的净影响强度”，不是对事件本身的道德评价。
-若消息同时存在多空因素，给出净影响分。
-若消息与 A 股关联弱、映射不清、缺乏传导路径、或只是外围噪音，分数应明显收敛到 0 附近。
-若只是个别公司受影响、对全市场或相关板块带动有限，不要轻易给过高绝对分值。
-若是旧闻重提、常规表述、市场高度预期内、缺乏新增信息，分数要下调。
-若消息真实性、执行力度、落地节奏存在明显不确定性，分数要下调。
-若是明确超预期、且有较强催化与映射，分数可上调。
+如果消息能较清晰映射到 A 股标准板块，且方向明确，就不能机械给 0。
+只要存在明确政策、价格、供需、技术突破、订单、监管、收储、补贴、涨价、限产、放量、落地执行等直接催化，通常不应给 0。
 
 ====================
 二、必须先判断方向
 ====================
 先判断净方向，只能三选一：
 
-1. 明确净利好
-- 对 A 股整体、某些板块、某些公司形成正向催化
+1. 明确偏多
+- 对 A 股某些板块、某些公司形成正向催化
 - 最终 score 为正数
 
-2. 明确净利空
-- 对 A 股整体、某些板块、某些公司形成负向压制
+2. 明确偏空
+- 对 A 股某些板块、某些公司形成负向压制
 - 最终 score 为负数
 
 3. 中性 / 方向不清 / 多空抵消
-- 与 A 股关系弱
-- 影响路径不明确
+- 无法映射
 - 消息偏噪音
 - 多空因素大致对冲
-- 最终 score 为 0，或非常接近 0 的小幅分值
+- 最终 score 为 0
 
 注意：
-- 只有在存在轻微但可识别的净方向时，才允许使用 ±1 到 ±9 这类小分值
-- 若方向本身都不清楚，优先输出 0，而不是勉强给正负号
+- 只有在存在轻微但可识别的方向时，才允许使用 ±1 到 ±9 这类小分值
+- 若 sectors 不为 null，且方向明确，原则上不应输出 0
+- 若 sectors 不为 null，且方向明确，abs(score) 原则上不低于 15
 
 ====================
-三、采用“绝对强度打分 + 正负方向挂载”的方式
+三、打分偏好
 ====================
-你必须先计算“绝对强度分 absolute_score”，范围 0 到 100。
-然后再根据方向给出正负号：
-- 净利好：score = +absolute_score
-- 净利空：score = -absolute_score
-- 中性或不明确：score = 0 或接近 0 的小分值
+你必须优先从“交易胜率”出发，而不是从“新闻摘要力度”出发。
 
-绝对强度分由以下维度组成：
+以下类型事件，若来源可靠、方向清晰、且能直接映射到 A 股标准板块，通常应给予较高分数，不应机械保守：
+1. 国家级 / 部委级明确政策落地
+2. 收储、收购、补贴、限产、配额、税收优惠、监管落地
+3. 明确涨价 / 跌价并可能驱动产业链利润重估
+4. 供需拐点被权威数据或政策显著强化
+5. 核心技术突破、量产、订单放量、渗透率跃迁
+6. 能直接改变市场对相关板块未来 1~3 个交易日定价预期的消息
 
-A. 事件本身的影响强度（0~30分）
-B. A 股映射清晰度（0~15分）
-C. 影响范围与扩散性（0~15分）
-D. 确定性 / 落地性 / 可信度（0~15分）
-E. 预期差 / 超预期程度（0~10分）
-F. 时间敏感性 / 交易性 / 催化性（0~10分）
-G. 修正项（-20~0分）
-
-最终：
-absolute_score = A + B + C + D + E + F + G
-然后限制在 0~100 之间，且必须输出整数。
+其中：
+- 高确定性、强映射、强交易性的政策或供需拐点事件，通常应进入 80 分以上区间
+- 近乎明牌、方向极清晰、板块承接预期极强的消息，可进入 90 分以上区间
+- 旧闻、例行表态、缺乏新增细节、映射很弱、短期不可交易的消息，要明显降分
 
 ====================
-四、各维度详细打分规则
+四、板块映射要求
 ====================
-
-A. 事件本身的影响强度（0~30分）
-判断事件如果成立，本身对基本面、板块情绪、市场风险偏好的冲击有多强。
-
-0~3分：
-- 几乎无实质影响
-- 偏资讯、花边、背景补充
-- 与交易关系极弱
-
-4~7分：
-- 有轻微信息量
-- 对局部认知可能有一点修正
-- 但难形成有效交易
-
-8~12分：
-- 有一定方向性
-- 对个股或小题材有轻微影响
-- 但整体冲击有限
-
-13~18分：
-- 对个股、细分赛道或局部题材有较清晰影响
-- 可能形成短线催化
-
-19~24分：
-- 对一个板块或产业链若干环节存在较明显影响
-- 具备较明确交易价值
-
-25~27分：
-- 影响较强
-- 有机会演化为重要板块催化或重要风险因素
-
-28~30分：
-- 影响极强
-- 可能构成主线级、系统性或高度聚焦的重大催化/利空
-
-A 维度重点看：
-- 是否涉及政策落地、重大订单、价格大涨大跌、产能/供给约束、业绩大幅超预期、核心产品突破、重大事故、重大监管、重大制裁、重大宏观变化
-- 是否有明确数据、金额、比例、规模、时间表、执行主体
-- 是否会改变市场对相关资产的定价逻辑
-
-B. A 股映射清晰度（0~15分）
-判断这条消息能否清晰映射到 A 股可交易对象。
-
-0~2分：
-- 很难映射到 A 股
-- 更像海外资讯、宏观噪音或泛行业信息
-
-3~5分：
-- 勉强能映射
-- 但链条较长，受益/受损对象模糊
-
-6~9分：
-- 可以映射到若干板块或部分公司
-- 但仍存在一定解释空间
-
-10~12分：
-- 映射较清晰
-- 市场较容易形成共识交易方向
-
-13~15分：
-- 映射非常清晰
-- 受益/受损板块和核心标的十分明确
-- 很容易转化为盘面交易语言
-
-C. 影响范围与扩散性（0~15分）
-判断这条消息影响的是单点、局部、板块，还是更广范围。
-
-0~2分：
-- 仅涉及很小范围，几乎无扩散性
-
-3~5分：
-- 主要影响单一公司或极少数标的
-
-6~9分：
-- 可影响一个细分赛道或几个相关环节
-
-10~12分：
-- 可影响较完整的产业链、重要板块或市场风格
-
-13~15分：
-- 可能影响多个板块、全市场风险偏好或大类资产定价
-
-D. 确定性 / 落地性 / 可信度（0~15分）
-判断消息是否可靠、是否已经落地、是否容易兑现。
-
-0~2分：
-- 传闻、猜测、引用不明、可信度弱
-
-3~5分：
-- 有媒体来源但信息仍模糊
-- 缺乏细则、执行时点不清
-
-6~9分：
-- 来源尚可
-- 有一定可信度
-- 但执行与兑现仍有不确定性
-
-10~12分：
-- 来自公司公告、权威媒体、部委、监管、正式签约、正式数据
-- 落地预期较强
-
-13~15分：
-- 高权威、高落地、高可验证
-- 执行主体、金额、范围、节奏都很明确
-
-E. 预期差 / 超预期程度（0~10分）
-判断这条消息相对于市场原有预期，是超预期、符合预期，还是低于预期。
-
-0~1分：
-- 基本无预期差
-- 早已被市场知道或交易
-
-2~3分：
-- 有一点新增信息
-- 但整体仍接近预期内
-
-4~6分：
-- 存在较明显预期差
-- 市场认知可能因此调整
-
-7~8分：
-- 明显超预期或明显低于预期
-- 容易引发重新定价
-
-9~10分：
-- 重大预期差
-- 高概率触发强烈情绪与资金反应
-
-F. 时间敏感性 / 交易性 / 催化性（0~10分）
-判断这条消息是否容易在短时间内转化为盘面交易。
-
-0~1分：
-- 主要是长期理解价值
-- 短线交易意义很弱
-
-2~3分：
-- 有一定参考意义
-- 但盘面反应未必明显
-
-4~6分：
-- 可以形成日内或短线催化
-- 有一定事件驱动价值
-
-7~8分：
-- 很容易成为盘中或近几日交易焦点
-
-9~10分：
-- 强催化、强传播、强交易属性
-- 高概率成为盘面重要驱动力
-
-G. 修正项（-20~0分）
-以下情况必须扣分，可叠加：
-
-1. 旧闻 / 重复表述 / 缺乏新增信息
--1 到 -8分
-
-2. 虽然看起来重大，但对 A 股传导很弱
--1 到 -10分
-
-3. 逻辑链条过长、受益受损不直接
--1 到 -8分
-
-4. 多空交织、净方向不突出
--1 到 -8分
-
-5. 执行周期太长、短期无法交易
--1 到 -6分
-
-6. 影响范围很窄，仅局部个股事件
--1 到 -6分
-
-7. 消息模糊、描述笼统、细节不足
--1 到 -8分
-
-注意：
-- 修正项用于让分数更贴近真实交易价值
-- 一条消息“看起来大”但“不可交易、已预期、映射弱”，应通过修正项明显降分
+- 你不能输出“机器人、算力、军工、创新药、新能源、AI、科技、有色”等名单外概念词
+- 你必须把概念映射到最贴近、最可能承接交易的标准板块
+- 例如：
+  - 猪价 / 收储 / 养殖利润修复 -> 养殖业
+  - 券商利好 -> 证券
+  - 原油勘探 / 油服 -> 油气开采及服务
+  - 炼化 / 成品油 -> 石油加工贸易
+  - 白酒刺激 -> 白酒
+- 若某消息只清晰指向一个板块，就只返回一个板块
+- 不要为了凑数返回多个板块
 
 ====================
-五、绝对分值区间解释
-====================
-在算出 absolute_score 之后，你还要对结果做一次常识校准，确保分值语义稳定：
-
-0分：
-- 完全中性、无效信息、噪音、几乎无法映射
-
-1~5分：
-- 极弱影响
-- 有一点方向性，但基本不构成有效交易
-
-6~10分：
-- 很弱影响
-- 仅有轻微参考价值
-
-11~15分：
-- 弱影响
-- 对个股或很小范围有轻微催化/压制
-
-16~20分：
-- 弱到中等影响
-- 可作为局部交易线索
-
-21~25分：
-- 中低强度影响
-- 对细分板块或题材存在一定推动/压制
-
-26~30分：
-- 中等影响的下沿
-- 已具备较清晰交易性
-
-31~35分：
-- 中等影响
-- 对题材或板块有一定驱动力
-
-36~40分：
-- 中等偏强影响
-- 市场可能明显关注
-
-41~45分：
-- 较强影响的起点
-- 有较明显板块催化或压制价值
-
-46~50分：
-- 中等偏强到较强影响
-- 方向明确，交易价值较高
-
-51~55分：
-- 较强影响
-- 可视作较明确的板块级催化/利空
-
-56~60分：
-- 较强影响上沿
-- 具备较持续的演绎可能
-
-61~65分：
-- 强影响
-- 重要板块、重要逻辑、较强传播
-
-66~70分：
-- 强影响上行段
-- 较容易形成一致性交易
-
-71~75分：
-- 很强影响
-- 接近主线级或重要风险因素
-
-76~80分：
-- 很强影响上沿
-- 对盘面和预期影响显著
-
-81~85分：
-- 极强影响起点
-- 高确定性、高映射、高传播度
-
-86~90分：
-- 极强影响
-- 具备很强的定价能力
-
-91~95分：
-- 罕见的超强影响
-- 重大政策、重大风险、重大突破、重大冲击
-
-96~100分：
-- 极少使用
-- 只有在“高确定性 + 高级别 + 高覆盖 + 强预期差 + 强交易价值”同时成立时才可使用
-
-====================
-六、1分档细化规则
-====================
-为了让 1 分档有实际意义，你必须在完成大层判断后，再做细化微调。
-
-同一层内，按以下规则微调 1~3 分：
-
-可上调的因素：
-- 比同类消息更超预期
-- 比同类消息更权威、更落地
-- 比同类消息更容易映射到 A 股核心标的
-- 比同类消息影响范围更广
-- 比同类消息更容易形成盘中交易
-- 同时兼具短期催化和中期基本面意义
-
-可下调的因素：
-- 虽有逻辑但缺乏落地细节
-- 虽有影响但传播性一般
-- 虽有映射但链条较长
-- 影响主要停留在理论层面
-- 题材较小众、市场关注度可能有限
-- 可能已经被市场部分交易
-
-你必须避免无根据地随意使用小数感式打分。
-1 分档不是“拍脑袋精确”，而是：
-- 先用大逻辑定层
-- 再用细节做 1~3 分微调
-- 保持同类事件打分口径稳定
-
-====================
-七、不同类型事件的特殊偏好
-====================
-
-1. 宏观 / 政策 / 监管类
-重点看：
-- 级别高不高
-- 是否正式落地
-- 是否有执行细则
-- 覆盖范围广不广
-- 传导是否直接进入 A 股定价
-
-原则：
-- 口号式表态、原则性支持、模糊措辞，不应高分
-- 真正高分的必须具备“明确措施 + 执行路径 + 受益/受损范围”
-
-2. 行业 / 产业链类
-重点看：
-- 供需变化是否真实
-- 涨价/跌价是否可持续
-- 供给约束是否有效
-- 订单、排产、渗透率、技术突破是否明确
-- 是否能形成板块共振而不是孤立事件
-
-3. 公司类
-重点看：
-- 是否超预期
-- 是否会改变盈利、订单、资产质量、竞争格局
-- 是否会带动同板块其他标的
-- 若只是单公司事件且板块带动弱，不要高分
-
-4. 海外扰动类
-重点看：
-- 是否能通过出口链、商品价格、风险偏好、汇率利率、科技限制等路径传导到 A 股
-- 海外新闻本身很大，不代表 A 股一定高分
-- 传导弱则保守打分
-
-5. 风险事件类
-包括事故、处罚、诉讼、退市、暴雷、违约、召回、制裁等
-重点看：
-- 是否会扩散到板块
-- 是否影响行业预期
-- 是否触发风险偏好收缩
-- 是否属于高确定性实质利空
-
-====================
-八、reason 的写法要求
+五、reason 的写法要求
 ====================
 reason 必须简洁但有信息量，控制在 2~4句以内。
 优先包含以下三层意思：
 1. 事件核心是什么
 2. 它如何传导到 A 股
 3. 为什么这个分数不是更高或更低
-
-好的 reason 应该像这样：
-- “消息直接指向某产业链需求/供给变化，A 股映射较清晰，对相关板块构成正向催化。”
-- “但目前仍缺少更具体的执行细则/订单规模/落地节奏，因此分数不宜打得过高。”
 
 避免：
 - 单纯复述电报
@@ -541,42 +321,18 @@ reason 必须简洁但有信息量，控制在 2~4句以内。
 - 不说明压分或加分原因
 
 ====================
-九、companies 提取要求
-====================
-- 只填电报中直接提到、或高度明确映射到的相关公司
-- 优先保留 A 股上市公司或 A 股最核心映射标的
-- 不要为了凑字段而硬填
-- 若只是行业或宏观消息，通常返回 null
-- 若存在多个公司，只保留最关键、最直接相关的，避免过多堆砌
-
-====================
-十、sectors 提取要求
-====================
-- 使用 A 股常见板块 / 概念 / 行业名称
-- 能具体就不要泛化
-- 优先保留最有交易意义的 1~3 个
-- 例如优先写：
-  创新药、算力、铜缆高速连接、煤炭、油气开采、军工、证券、房地产、光伏、锂电、稀土、消费电子、机器人、智能驾驶
-- 不要泛泛写成：
-  科技、制造业、新能源、工业
-- sectors 反映涉及方向，不等于强交易方向；只要存在较清晰板块映射，即使 score 接近 0，sectors 也不应轻易置 null。
-- 完全无法归类则返回 null
-
-====================
-十一、最终校验规则
+六、最终校验规则
 ====================
 输出前必须自检：
 
 1. 是否只输出一个 JSON 对象
-2. 是否字段名严格为：score, reason, companies, sectors
-3. score 是否为整数
-4. score 是否在 -100 到 100 之间
-5. 是否确实站在 A 股交易视角，而不是新闻摘要视角
-6. companies 和 sectors 没有时是否为 null
-7. reason 是否控制在 2~4句以内
-8. reason 是否说明了影响路径和压分/加分依据
-9. 是否避免把旧闻、噪音、弱映射消息打成高分
-10. 是否避免因为“消息看起来大”就直接高分
+2. 字段名是否严格为：score, reason, companies, sectors
+3. score 是否为整数，且在 -100 到 100 之间
+4. 是否确实站在 A 股未来 1~3 个交易日交易视角，而不是新闻摘要视角
+5. companies 和 sectors 没有时是否为 null
+6. sectors 是否全部来自标准板块名单
+7. 是否避免把能明确映射板块且方向清晰的消息打成 0
+8. 是否避免因为“消息看起来大”就直接高分
 
 最终输出要求：
 - 只返回 JSON
@@ -587,6 +343,160 @@ reason 必须简洁但有信息量，控制在 2~4句以内。
 - score 一定要是整数
 - companies 和 sectors 没有时必须返回 null
 """
+
+REPAIR_PROMPT = f"""
+你是一个 A 股财联社电报分析结果修正器。
+
+你的任务不是重新写长分析，而是把一份已有的 JSON 结果修正到更符合以下要求：
+1. score 代表未来 1~3 个交易日上涨/下跌概率与把握，不是新闻重要性
+2. 只要能映射到标准板块且方向明确，就不能机械给 0
+3. 直接政策、收储、补贴、涨价、订单、技术突破、量产、明确监管落地这类强催化，不要明显保守
+4. sectors 只能从下面的标准板块名单中选，必须原词输出
+5. 最终仍然只能输出一个 JSON 对象，字段固定为：score, reason, companies, sectors
+
+标准板块名单：
+{SECTOR_WHITELIST_TEXT}
+"""
+
+
+def _dedupe_keep_order(items: List[str]) -> List[str]:
+    result = []
+    seen = set()
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def _clean_text(value) -> str:
+    return str(value or "").strip()
+
+
+def _coerce_int(value, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(round(value))
+
+    text = _clean_text(value)
+    m = re.search(r"-?\d+", text)
+    if m:
+        try:
+            return int(m.group())
+        except Exception:
+            return default
+    return default
+
+
+def _coerce_optional_list(value) -> Optional[List[str]]:
+    if value is None:
+        return None
+
+    if isinstance(value, list):
+        items = [_clean_text(v) for v in value]
+        items = [v for v in items if v]
+        return items or None
+
+    text = _clean_text(value)
+    if not text or text.lower() == "null":
+        return None
+
+    # 尽量兼容 "A、B、C" / "A,B,C"
+    parts = re.split(r"[、，,;/；\n]+", text)
+    parts = [_clean_text(p) for p in parts]
+    parts = [p for p in parts if p]
+    return parts or None
+
+
+def _coerce_payload_shape(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError(f"LLM payload is not a dict: {type(payload)}")
+
+    return {
+        "score": _coerce_int(payload.get("score"), default=0),
+        "reason": _clean_text(payload.get("reason")) or "未返回有效分析理由。",
+        "companies": _coerce_optional_list(payload.get("companies")),
+        "sectors": _coerce_optional_list(payload.get("sectors")),
+    }
+
+
+def _normalize_company_list(items: Optional[List[str]]) -> Optional[List[str]]:
+    if not items:
+        return None
+
+    result = []
+    for item in items:
+        item = _clean_text(item)
+        if item:
+            result.append(item)
+
+    result = _dedupe_keep_order(result)
+    return result or None
+
+
+def _normalize_sector_name(name: str) -> Optional[str]:
+    raw = _clean_text(name)
+    if not raw:
+        return None
+
+    if raw in SECTOR_SET:
+        return raw
+
+    for sector in SECTOR_WHITELIST:
+        if sector in raw:
+            return sector
+
+    compact = re.sub(r"[\s、，,/；;（）()\-_—]+", "", raw)
+    if compact in SECTOR_SET:
+        return compact
+
+    if compact in SECTOR_ALIASES:
+        return SECTOR_ALIASES[compact]
+
+    for alias, sector in SECTOR_ALIASES.items():
+        if alias in raw or alias in compact:
+            return sector
+
+    return None
+
+
+def _infer_sectors_from_text(content: str) -> List[str]:
+    result = []
+    for pattern, sector in CONTENT_SECTOR_RULES:
+        if re.search(pattern, content, flags=re.I):
+            result.append(sector)
+    return _dedupe_keep_order(result)[:3]
+
+
+def _normalize_sector_list(
+    items: Optional[List[str]],
+    *,
+    content: str = "",
+    subjects: Optional[List[str]] = None,
+) -> Optional[List[str]]:
+    result = []
+
+    if items:
+        for item in items:
+            normalized = _normalize_sector_name(item)
+            if normalized:
+                result.append(normalized)
+
+    if not result and subjects:
+        for subject in subjects:
+            normalized = _normalize_sector_name(subject)
+            if normalized:
+                result.append(normalized)
+
+    if not result and content:
+        result.extend(_infer_sectors_from_text(content))
+
+    result = _dedupe_keep_order(result)[:3]
+    return result or None
+
 
 def _extract_json_text(text: str) -> str:
     text = (text or "").strip()
@@ -619,33 +529,12 @@ def _parse_json_payload(json_text: str) -> dict:
     return payload
 
 
-def analyze_cls_telegraph(content: str, subjects: Optional[list[str]] = None) -> dict:
-    content = (content or "").strip()
-    subjects = subjects or []
-
-    if not content:
-        return {
-            "score": 0,
-            "reason": "电报内容为空，未执行有效分析。",
-            "companies": None,
-            "sectors": None,
-        }
-
-    client = _build_client()
-    model_name = "qwen-plus"
-
-    user_content = (
-        f"主题标签：{json.dumps(subjects, ensure_ascii=False)}\n"
-        f"电报内容：{content}"
-    )
-
+def _call_llm_json(client: OpenAI, messages: list, temperature: float = 0.2) -> dict:
     request_kwargs = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.2,
+        "model": "qwen-plus",
+        "messages": messages,
+        "temperature": temperature,
+        "extra_body": {"enable_thinking": True},
     }
 
     try:
@@ -659,10 +548,180 @@ def analyze_cls_telegraph(content: str, subjects: Optional[list[str]] = None) ->
     text = resp.choices[0].message.content
     json_text = _extract_json_text(text)
     payload = _parse_json_payload(json_text)
+    return _coerce_payload_shape(payload)
 
+
+def _infer_direction(content: str) -> int:
+    text = content or ""
+
+    pos_count = sum(1 for kw in STRONG_POSITIVE_KEYWORDS if kw in text)
+    neg_count = sum(1 for kw in STRONG_NEGATIVE_KEYWORDS if kw in text)
+
+    if pos_count > neg_count:
+        return 1
+    if neg_count > pos_count:
+        return -1
+    return 0
+
+
+def _has_official_source(content: str) -> bool:
+    return any(kw in (content or "") for kw in OFFICIAL_KEYWORDS)
+
+
+def _has_numeric_detail(content: str) -> bool:
+    return bool(re.search(r"\d", content or ""))
+
+
+def _is_strong_event(content: str) -> bool:
+    text = content or ""
+    strong_pos = any(kw in text for kw in STRONG_POSITIVE_KEYWORDS)
+    strong_neg = any(kw in text for kw in STRONG_NEGATIVE_KEYWORDS)
+
+    if strong_pos or strong_neg:
+        if _has_official_source(text) or _has_numeric_detail(text):
+            return True
+
+    # 少数典型高交易性关键词，单独放宽
+    hard_patterns = [
+        r"收储", r"中标", r"量产", r"获批", r"回购", r"增持", r"提价", r"涨价",
+        r"降息", r"降准", r"停产", r"处罚", r"立案", r"制裁", r"订单", r"断供",
+    ]
+    return any(re.search(p, text) for p in hard_patterns)
+
+
+def _needs_repair(
+    content: str,
+    raw_payload: dict,
+    normalized_payload: dict,
+) -> bool:
+    raw_sectors = raw_payload.get("sectors") or []
+    normalized_sectors = normalized_payload.get("sectors") or []
+    raw_score = _coerce_int(raw_payload.get("score"), 0)
+
+    # 原始结果给了板块，但映射后全失效，说明板块不规范
+    if raw_sectors and not normalized_sectors:
+        return True
+
+    # 能映射板块但给 0，触发纠偏
+    if normalized_sectors and raw_score == 0:
+        return True
+
+    # 明显强事件但分数过于保守，触发纠偏
+    if normalized_sectors and _is_strong_event(content) and abs(raw_score) < 45:
+        return True
+
+    return False
+
+
+def _post_process_payload(
+    payload: dict,
+    *,
+    content: str,
+    subjects: Optional[List[str]] = None,
+) -> dict:
+    score = max(-100, min(100, _coerce_int(payload.get("score"), 0)))
+    reason = _clean_text(payload.get("reason")) or "未返回有效分析理由。"
+    companies = _normalize_company_list(_coerce_optional_list(payload.get("companies")))
+    sectors = _normalize_sector_list(
+        _coerce_optional_list(payload.get("sectors")),
+        content=content,
+        subjects=subjects or [],
+    )
+
+    # 兜底：只要能明确映射板块且方向清晰，不允许最后还是 0
+    if score == 0 and sectors:
+        direction = _infer_direction(content)
+        if direction != 0:
+            score = direction * (35 if _is_strong_event(content) else 15)
+
+    return {
+        "score": max(-100, min(100, int(score))),
+        "reason": reason,
+        "companies": companies,
+        "sectors": sectors,
+    }
+
+
+def _repair_analysis(
+    client: OpenAI,
+    *,
+    content: str,
+    subjects: Optional[List[str]],
+    first_payload: dict,
+) -> dict:
+    user_content = (
+        f"主题标签：{json.dumps(subjects or [], ensure_ascii=False)}\n"
+        f"电报内容：{content}\n\n"
+        f"上一版结果：{json.dumps(first_payload, ensure_ascii=False)}\n\n"
+        "请按修正规则重新输出一个 JSON 结果。"
+    )
+
+    repaired_payload = _call_llm_json(
+        client=client,
+        messages=[
+            {"role": "system", "content": REPAIR_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        temperature=0.1,
+    )
+    return repaired_payload
+
+
+def analyze_cls_telegraph(content: str, subjects: Optional[list[str]] = None) -> dict:
+    content = (content or "").strip()
+    subjects = subjects or []
+
+    if not content:
+        return {
+            "score": 0,
+            "reason": "电报内容为空，未执行有效分析。",
+            "companies": None,
+            "sectors": None,
+        }
+
+    client = _build_client()
+
+    user_content = (
+        f"主题标签：{json.dumps(subjects, ensure_ascii=False)}\n"
+        f"电报内容：{content}"
+    )
+
+    # 第一轮
+    first_payload = _call_llm_json(
+        client=client,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        temperature=0.15,
+    )
+
+    normalized_first = _post_process_payload(
+        first_payload,
+        content=content,
+        subjects=subjects,
+    )
+
+    final_payload = normalized_first
+
+    # 必要时二次纠偏
+    if _needs_repair(content, first_payload, normalized_first):
+        repaired_raw = _repair_analysis(
+            client=client,
+            content=content,
+            subjects=subjects,
+            first_payload=normalized_first,
+        )
+        final_payload = _post_process_payload(
+            repaired_raw,
+            content=content,
+            subjects=subjects,
+        )
+
+    # 最终再走一次 Pydantic 兜底校验
     try:
-        analysis = CLSTelegraphLLMAnalysis.model_validate(payload)
+        analysis = CLSTelegraphLLMAnalysis.model_validate(final_payload)
     except ValidationError as e:
-        raise ValueError(f"Invalid LLM analysis payload: {e}") from e
+        raise ValueError(f"Invalid LLM analysis payload after post-process: {e}") from e
 
     return analysis.to_mongo_dict()
