@@ -18,6 +18,7 @@ from app.llm.Moring_Reading_llm import analyze_morning_data
 from app.crawlers.Get_fupan import fetch_fupan_full_visible_text, build_fupan_url
 from app.llm.cls_telegraph_llm import analyze_cls_telegraph
 from app.repo.cls_telegraph import CLSTelegraphRepository
+from app.repo.daily_market_analysis import DailyMarketAnalysisRepository
 from app.crawlers.Get_cls_telegraph import fetch_latest_telegraphs
 
 logger = get_logger("bootstrap")
@@ -48,6 +49,7 @@ class Application:
         self.mongo_client = None
         self.db = None
         self.cls_telegraph_repository = None
+        self.daily_market_analysis_repository = None
 
         # 财联社电报轮询任务
         self.cls_telegraph_polling_task = None
@@ -55,8 +57,8 @@ class Application:
     def get_a_share_trade_dates(self, now: datetime | None = None) -> tuple[str, str]:
         """
         返回:
-        - today_trade_date: 当前业务交易日
-        - prev_trade_date: 前一个交易日
+        - today_trade_date: 当前业务交易日，格式 YYYYMMDD
+        - prev_trade_date: 前一个交易日，格式 YYYYMMDD
         """
         now = now.astimezone(CN_TZ) if now else datetime.now(CN_TZ)
 
@@ -71,6 +73,40 @@ class Application:
         prev_trade_day = XSHG.previous_session(today_trade_day)
 
         return today_trade_day.strftime("%Y%m%d"), prev_trade_day.strftime("%Y%m%d")
+
+    @staticmethod
+    def _format_trade_date(trade_date: str) -> str:
+        """
+        YYYYMMDD -> YYYY-MM-DD
+        """
+        trade_date = (trade_date or "").strip()
+        if len(trade_date) == 8 and trade_date.isdigit():
+            return f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
+        return trade_date
+
+    def _build_daily_market_analysis_doc(
+        self,
+        *,
+        analysis_date: str,
+        trade_date: str,
+        prev_trade_date: str,
+        morning_data: dict,
+        prev_day_review: str,
+        analysis_text: str,
+    ) -> dict:
+        """
+        构造盘前梳理入库文档。
+        同一天 analysis_date 唯一。
+        """
+        return {
+            "analysis_date": analysis_date,   # 唯一键：同一天只保留一条
+            "trade_date": trade_date,         # YYYYMMDD
+            "prev_trade_date": prev_trade_date,  # YYYYMMDD
+            "source": morning_data.get("source"),
+            "morning_data": morning_data,
+            "prev_day_review": prev_day_review,
+            "analysis_text": analysis_text,
+        }
 
     async def _maybe_await(self, result):
         if inspect.isawaitable(result):
@@ -304,6 +340,9 @@ class Application:
         self.cls_telegraph_repository = CLSTelegraphRepository(self.db)
         await self.cls_telegraph_repository.create_indexes()
 
+        self.daily_market_analysis_repository = DailyMarketAnalysisRepository(self.db)
+        await self.daily_market_analysis_repository.create_indexes()
+
         # 启动调度器
         try:
             await self._start_scheduler()
@@ -344,9 +383,23 @@ class Application:
         logger.info("daily test card sent")
 
     async def send_daily_market_analysis_card(self):
+        """
+        盘前主线分析：
+        1. 抓早盘材料
+        2. 抓前一交易日复盘
+        3. 跑 LLM
+        4. 结果按 analysis_date 唯一 upsert 到 Mongo
+        5. 发飞书卡片
+
+        注意：
+        - 同一天只保留一条数据
+        - 如果因为重启服务又重新分析了，会更新当天记录，不会新增第二条
+        """
         try:
+            today_trade_date, prev_trade_date = self.get_a_share_trade_dates()
+
             logger.info("start fetching morning market data")
-            morning_data = fetch_and_split_morning_data(self.get_a_share_trade_dates()[0])
+            morning_data = fetch_and_split_morning_data(today_trade_date)
 
             if not morning_data:
                 logger.warning("morning_data is empty")
@@ -359,7 +412,7 @@ class Application:
             )
 
             logger.info("start fetching previous day review")
-            review_url = build_fupan_url(self.get_a_share_trade_dates()[1])
+            review_url = build_fupan_url(prev_trade_date)
 
             prev_day_review = await asyncio.to_thread(
                 fetch_fupan_full_visible_text,
@@ -384,8 +437,35 @@ class Application:
 
             logger.info("llm analysis finished, analysis_len=%s", len(analysis_text))
 
+            analysis_date = (
+                (morning_data.get("date") or "").strip()
+                or self._format_trade_date(today_trade_date)
+            )
+
+            # 先入库/更新，保证当天只有一条
+            if self.daily_market_analysis_repository is not None:
+                doc = self._build_daily_market_analysis_doc(
+                    analysis_date=analysis_date,
+                    trade_date=today_trade_date,
+                    prev_trade_date=prev_trade_date,
+                    morning_data=morning_data,
+                    prev_day_review=prev_day_review,
+                    analysis_text=analysis_text,
+                )
+
+                update_result = await self.daily_market_analysis_repository.upsert_one(doc)
+                is_new_insert = bool(getattr(update_result, "upserted_id", None))
+
+                logger.info(
+                    "daily market analysis saved successfully, analysis_date=%s, action=%s",
+                    analysis_date,
+                    "insert" if is_new_insert else "update",
+                )
+            else:
+                logger.warning("daily_market_analysis_repository is not initialized")
+
             card = self.card_builder.build_daily_market_analysis_card(
-                date=morning_data.get("date"),
+                date=analysis_date,
                 analysis_text=analysis_text,
                 morning_data=morning_data,
             )
