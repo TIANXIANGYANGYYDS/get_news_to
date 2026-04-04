@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import asyncio
+import contextlib
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -14,6 +17,8 @@ class DailyScheduler:
         self.minute = minute
         self.timezone = timezone
         self.task_callable = task_callable
+        self._task: asyncio.Task | None = None
+        self._next_run_time: datetime | None = None
 
     def get_next_run_time(self) -> datetime:
         tz = ZoneInfo(self.timezone)
@@ -31,9 +36,50 @@ class DailyScheduler:
 
         return next_run
 
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    @property
+    def next_run_at(self) -> datetime | None:
+        return self._next_run_time
+
+    @property
+    def next_run_at_iso(self) -> str | None:
+        if self._next_run_time is None:
+            return None
+        return self._next_run_time.isoformat()
+
+    async def startup(self):
+        if self.is_running:
+            return
+
+        self._task = asyncio.create_task(
+            self.run_forever(),
+            name="daily-market-analysis-scheduler",
+        )
+
+    async def start(self):
+        await self.startup()
+
+    async def shutdown(self):
+        if self._task is None:
+            return
+
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+
+        self._task = None
+        self._next_run_time = None
+
+    async def stop(self):
+        await self.shutdown()
+
     async def run_forever(self):
         while True:
             next_run = self.get_next_run_time()
+            self._next_run_time = next_run
             now = datetime.now(ZoneInfo(self.timezone))
             wait_seconds = (next_run - now).total_seconds()
 

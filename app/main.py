@@ -1,6 +1,11 @@
-import asyncio
+from __future__ import annotations
 
-from app.bootstrap import Application
+from contextlib import asynccontextmanager
+from typing import Any, Callable
+
+from fastapi import FastAPI
+
+from app.api import router
 from app.config import settings
 from app.logger import get_logger
 
@@ -8,22 +13,52 @@ from app.logger import get_logger
 logger = get_logger("main")
 
 
-async def main():
-    app = Application()
-    await app.startup()
+def create_app(
+    application_factory: Callable[[], Any] | None = None,
+    run_on_startup: bool | None = None,
+) -> FastAPI:
+    should_run_on_startup = settings.run_on_startup if run_on_startup is None else run_on_startup
 
-    try:
-        if settings.run_on_startup:
-            # logger.info("run startup test task once")
-            # await app.send_daily_test_card()   #发送测试卡
-            logger.info("run startup market analysis task once")
-            await app.send_daily_market_analysis_card()
+    @asynccontextmanager
+    async def lifespan(fastapi_app: FastAPI):
+        factory = application_factory
+        if factory is None:
+            from app.bootstrap import Application
 
-        logger.info("scheduler started")
-        await app.scheduler.run_forever()
-    finally:
-        await app.shutdown()
+            factory = Application
+
+        application = factory()
+        fastapi_app.state.application = application
+
+        await application.startup()
+
+        try:
+            if should_run_on_startup:
+                logger.info("run startup market analysis task once")
+                await application.send_daily_market_analysis_card()
+
+            yield
+        finally:
+            await application.shutdown()
+
+    fastapi_app = FastAPI(
+        title="daily_pe_reporter",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
+    fastapi_app.include_router(router)
+    return fastapi_app
+
+
+app = create_app()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import uvicorn
+
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+    )
