@@ -293,3 +293,98 @@ class SectorMarketHeatRankingRepository:
 
     def _biz_date(self, ts: int) -> str:
         return datetime.fromtimestamp(ts, ZoneInfo(self.timezone)).date().isoformat()
+
+    def build_llm_ranking_payload(
+        self,
+        doc: dict | None,
+        limit: int | None = None,
+    ) -> dict | None:
+        """
+        构造提供给 LLM 的精简排行结果。
+
+        仅保留：
+        - sector: 板块
+        - rank: 排名
+        - final_score: 得分
+        - news_count: 新闻数量
+        """
+        if not doc:
+            return None
+
+        return {
+            "biz_date": doc.get("biz_date"),
+            "ranking_type": doc.get("ranking_type") or "sector_market_heat",
+            "sector_rankings": self._simplify_sector_rankings(
+                doc.get("sector_rankings"),
+                limit=limit,
+            ),
+        }
+
+    def _simplify_sector_rankings(
+        self,
+        sector_rankings: Any,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(sector_rankings, list):
+            return []
+
+        simplified: list[dict[str, Any]] = []
+        for idx, item in enumerate(sector_rankings, start=1):
+            if not isinstance(item, dict):
+                continue
+
+            sector = str(item.get("sector") or "").strip()
+            if not sector:
+                continue
+
+            rank = self._safe_positive_int(item.get("rank"), default=idx)
+            news_count = self._safe_non_negative_int(item.get("news_count"), default=0)
+
+            simplified.append(
+                {
+                    "sector": sector,
+                    "rank": rank,
+                    "final_score": self._round(self._safe_float(item.get("final_score"), 0.0)),
+                    "news_count": news_count,
+                }
+            )
+
+        simplified.sort(key=lambda x: (x["rank"], -x["final_score"], x["sector"]))
+
+        if limit is not None and limit > 0:
+            return simplified[:limit]
+        return simplified
+
+    @staticmethod
+    def _safe_positive_int(value: Any, default: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
+
+    @staticmethod
+    def _safe_non_negative_int(value: Any, default: int = 0) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return max(parsed, 0)
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    async def get_market_heat_ranking(
+        self,
+        biz_date: str,
+        limit: int | None = None,
+    ) -> dict | None:
+        """
+        获取指定日期的市场热度排行榜（LLM精简字段）。
+        """
+        doc = await self.get_by_biz_date(biz_date)
+        return self.build_llm_ranking_payload(doc, limit=limit)

@@ -1,4 +1,6 @@
 import re
+from typing import Any
+
 from openai import OpenAI
 from app.config import settings
 
@@ -286,9 +288,84 @@ def _all_mainlines_in_whitelist(text: str) -> bool:
     return all(name in SECTOR_SET for name in names)
 
 
-def _build_user_prompt(morning_data: dict, prev_day_review: str = "") -> str:
+def _normalize_llm_ranking_rows(ranking_payload: dict | None, top_n: int = 12) -> list[dict[str, Any]]:
+    if not isinstance(ranking_payload, dict):
+        return []
+
+    rows = ranking_payload.get("sector_rankings")
+    if not isinstance(rows, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for idx, item in enumerate(rows, start=1):
+        if not isinstance(item, dict):
+            continue
+
+        sector = str(item.get("sector") or "").strip()
+        if not sector:
+            continue
+
+        rank = item.get("rank")
+        if not isinstance(rank, int) or rank <= 0:
+            rank = idx
+
+        final_score = item.get("final_score")
+        try:
+            final_score = round(float(final_score), 2)
+        except (TypeError, ValueError):
+            final_score = 0.0
+
+        news_count = item.get("news_count")
+        try:
+            news_count = int(news_count)
+        except (TypeError, ValueError):
+            news_count = 0
+        news_count = max(news_count, 0)
+
+        normalized.append(
+            {
+                "sector": sector,
+                "rank": rank,
+                "final_score": final_score,
+                "news_count": news_count,
+            }
+        )
+
+    normalized.sort(key=lambda x: (x["rank"], -x["final_score"], x["sector"]))
+    if top_n > 0:
+        return normalized[:top_n]
+    return normalized
+
+
+def _format_ranking_for_prompt(title: str, ranking_payload: dict | None) -> str:
+    rows = _normalize_llm_ranking_rows(ranking_payload, top_n=12)
+    if not rows:
+        return f"【{title}】\n无可用数据"
+
+    lines = [f"【{title}】"]
+    for item in rows:
+        lines.append(
+            f"{item['rank']}. {item['sector']} | score={item['final_score']} | news={item['news_count']}"
+        )
+    return "\n".join(lines)
+
+
+def _build_user_prompt(
+    morning_data: dict,
+    prev_day_review: str = "",
+    investment_preference_ranking: dict | None = None,
+    market_heat_ranking: dict | None = None,
+) -> str:
     date_str = morning_data.get("date", "")
     sections = morning_data.get("sections", {})
+    investment_ranking_text = _format_ranking_for_prompt(
+        "市场投资倾向排行（近72小时）",
+        investment_preference_ranking,
+    )
+    market_heat_ranking_text = _format_ranking_for_prompt(
+        "市场热度排行（近72小时）",
+        market_heat_ranking,
+    )
 
     return f"""
 以下是 {date_str} 的盘前材料，请只提炼今天最值得关注的 5 条交易主线，按强弱排序输出。
@@ -304,6 +381,11 @@ def _build_user_prompt(morning_data: dict, prev_day_review: str = "") -> str:
 - 不允许输出名单外名称；
 - 不允许输出概念题材词，只能输出标准板块名；
 - 每条理由可以适当详细，但重点必须始终围绕“今天为什么会被交易、为什么排在这个位置”。
+
+【结构化排行参考（用于强弱排序）】
+{investment_ranking_text}
+
+{market_heat_ranking_text}
 
 【前一交易日复盘】
 {prev_day_review}
@@ -356,7 +438,12 @@ def _repair_output_to_whitelist(client: OpenAI, raw_output: str) -> str:
     return resp.choices[0].message.content or raw_output
 
 
-def analyze_morning_data(morning_data: dict, prev_day_review: str = "") -> str:
+def analyze_morning_data(
+    morning_data: dict,
+    prev_day_review: str = "",
+    investment_preference_ranking: dict | None = None,
+    market_heat_ranking: dict | None = None,
+) -> str:
     """
     将早盘分段结果 + 前一交易日复盘，一起交给 LLM 分析。
     增加了：
@@ -370,7 +457,12 @@ def analyze_morning_data(morning_data: dict, prev_day_review: str = "") -> str:
         timeout=90.0,
     )
 
-    user_prompt = _build_user_prompt(morning_data, prev_day_review)
+    user_prompt = _build_user_prompt(
+        morning_data=morning_data,
+        prev_day_review=prev_day_review,
+        investment_preference_ranking=investment_preference_ranking,
+        market_heat_ranking=market_heat_ranking,
+    )
 
     resp = client.chat.completions.create(
         model="qwen-plus",

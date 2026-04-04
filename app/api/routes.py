@@ -76,7 +76,10 @@ async def analyze_cls_telegraph_endpoint(payload: TelegraphAnalysisRequest):
 
 
 @router.post("/analysis/morning", response_model=MorningAnalysisResponse)
-async def analyze_morning_endpoint(payload: MorningAnalysisRequest):
+async def analyze_morning_endpoint(
+    payload: MorningAnalysisRequest,
+    application: Any = Depends(get_application),
+):
     from app.llm.Moring_Reading_llm import analyze_morning_data
 
     morning_data = {
@@ -86,9 +89,35 @@ async def analyze_morning_endpoint(payload: MorningAnalysisRequest):
         },
     }
 
+    analysis_date = morning_data["date"]
+    investment_preference_ranking = None
+    market_heat_ranking = None
+
+    investment_repo = getattr(application, "sector_investment_preference_ranking_repository", None)
+    if investment_repo is not None:
+        try:
+            investment_preference_ranking = await investment_repo.get_investment_preference_ranking(
+                analysis_date,
+                limit=12,
+            )
+        except Exception:
+            investment_preference_ranking = None
+
+    market_heat_repo = getattr(application, "sector_market_heat_ranking_repository", None)
+    if market_heat_repo is not None:
+        try:
+            market_heat_ranking = await market_heat_repo.get_market_heat_ranking(
+                analysis_date,
+                limit=12,
+            )
+        except Exception:
+            market_heat_ranking = None
+
     analysis_text = await asyncio.to_thread(
         analyze_morning_data,
         morning_data,
         payload.review_content,
+        investment_preference_ranking,
+        market_heat_ranking,
     )
     return MorningAnalysisResponse(analysis_text=analysis_text)
