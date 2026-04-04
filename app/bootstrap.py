@@ -709,11 +709,54 @@ class Application:
                 len(prev_day_review or ""),
             )
 
+            # 优先使用早盘数据中的日期；若缺失，则用当前交易日格式化结果兜底
+            analysis_date = (
+                (morning_data.get("date") or "").strip()
+                or self._format_trade_date(today_trade_date)
+            )
+
+            investment_preference_ranking = None
+            market_heat_ranking = None
+
+            if self.sector_investment_preference_ranking_repository is not None:
+                try:
+                    investment_preference_ranking = await (
+                        self.sector_investment_preference_ranking_repository.get_investment_preference_ranking(
+                            analysis_date,
+                            limit=12,
+                        )
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "load investment preference ranking failed, analysis_date=%s, err=%s",
+                        analysis_date,
+                        e,
+                    )
+            else:
+                logger.warning("sector_investment_preference_ranking_repository is not initialized")
+
+            if self.sector_market_heat_ranking_repository is not None:
+                try:
+                    market_heat_ranking = await self.sector_market_heat_ranking_repository.get_market_heat_ranking(
+                        analysis_date,
+                        limit=12,
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "load market heat ranking failed, analysis_date=%s, err=%s",
+                        analysis_date,
+                        e,
+                    )
+            else:
+                logger.warning("sector_market_heat_ranking_repository is not initialized")
+
             logger.info("start llm analysis for morning market data")
             analysis_text = await asyncio.to_thread(
                 analyze_morning_data,
                 morning_data,
                 prev_day_review,
+                investment_preference_ranking,
+                market_heat_ranking,
             )
 
             if not analysis_text:
@@ -721,12 +764,6 @@ class Application:
                 return
 
             logger.info("llm analysis finished, analysis_len=%s", len(analysis_text))
-
-            # 优先使用早盘数据中的日期；若缺失，则用当前交易日格式化结果兜底
-            analysis_date = (
-                (morning_data.get("date") or "").strip()
-                or self._format_trade_date(today_trade_date)
-            )
 
             # 先入库/更新，保证当天只有一条
             if self.daily_market_analysis_repository is not None:
