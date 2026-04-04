@@ -48,3 +48,5 @@ urllib3==2.6.3
 wheel==0.46.3
 yarl @ file:///home/conda/feedstock_root/build_artifacts/yarl_1772409262719/work
 streamlit>=1.28.0
+fastapi
+uvicorn

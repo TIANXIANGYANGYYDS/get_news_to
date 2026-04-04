@@ -1,25 +1,13 @@
 nohup: ignoring input
-[2026-04-04 19:01:24] [INFO] [feishu.notifier] feishu session started
-[2026-04-04 19:01:24] [WARNING] [bootstrap] daily scheduler has no startup()/start() method, skip starting
-[2026-04-04 19:01:24] [INFO] [bootstrap] no new cls telegraphs to analyze and upsert
-[2026-04-04 19:01:24] [INFO] [bootstrap] sector 3d daily summary updated, biz_date=2026-04-04, sector_count=563, total_news_count=2186, total_score_sum=41461
-[2026-04-04 19:01:24] [INFO] [bootstrap] sector investment preference ranking updated, biz_date=2026-04-04, sector_count=563, total_news_count=1012
-[2026-04-04 19:01:24] [INFO] [bootstrap] sector market heat ranking updated, biz_date=2026-04-04, sector_count=563, total_news_count=1012
-[2026-04-04 19:01:24] [INFO] [main] run startup market analysis task once
-[2026-04-04 19:01:24] [INFO] [bootstrap] start fetching morning market data
-[2026-04-04 19:01:24] [INFO] [bootstrap] morning data fetched successfully, date=2026-04-03, raw_content_len=4360
-[2026-04-04 19:01:24] [INFO] [bootstrap] start fetching previous day review
-[2026-04-04 19:01:25] [INFO] [bootstrap] previous day review fetched successfully, review_len=3480
-[2026-04-04 19:01:25] [INFO] [bootstrap] start llm analysis for morning market data
-[2026-04-04 19:02:28] [INFO] [bootstrap] llm analysis finished, analysis_len=903
-[2026-04-04 19:02:28] [INFO] [bootstrap] daily market analysis saved successfully, analysis_date=2026-04-03, action=update
-[2026-04-04 19:02:28] [INFO] [feishu.notifier] feishu tenant_access_token refreshed
-[2026-04-04 19:02:28] [INFO] [feishu.notifier] sending feishu interactive card
-[2026-04-04 19:02:28] [INFO] [feishu.notifier] feishu card sent successfully
-[2026-04-04 19:02:28] [INFO] [bootstrap] daily market analysis card sent
-[2026-04-04 19:02:28] [INFO] [main] scheduler started
-[2026-04-04 19:02:28] [INFO] [scheduler.daily] next run at 2026-04-05 09:00:00 CST, waiting 50251 seconds
-[2026-04-04 19:06:25] [INFO] [bootstrap] no new cls telegraphs to analyze and upsert
-[2026-04-04 19:06:25] [INFO] [bootstrap] sector 3d daily summary updated, biz_date=2026-04-04, sector_count=560, total_news_count=2173, total_score_sum=41314
-[2026-04-04 19:06:25] [INFO] [bootstrap] sector investment preference ranking updated, biz_date=2026-04-04, sector_count=560, total_news_count=1007
-[2026-04-04 19:06:25] [INFO] [bootstrap] sector market heat ranking updated, biz_date=2026-04-04, sector_count=560, total_news_count=1007
+[2026-04-05 00:16:52] [INFO] [feishu.notifier] feishu session started
+[2026-04-05 00:16:52] [WARNING] [bootstrap] daily scheduler has no startup()/start() method, skip starting
+[2026-04-05 00:16:52] [INFO] [bootstrap] no new cls telegraphs to analyze and upsert
+[2026-04-05 00:16:52] [INFO] [bootstrap] sector 3d daily summary updated, biz_date=2026-04-05, sector_count=507, total_news_count=1965, total_score_sum=40443
+[2026-04-05 00:16:52] [INFO] [bootstrap] sector investment preference ranking updated, biz_date=2026-04-05, sector_count=507, total_news_count=940
+[2026-04-05 00:16:52] [INFO] [bootstrap] sector market heat ranking updated, biz_date=2026-04-05, sector_count=507, total_news_count=940
+[2026-04-05 00:16:52] [INFO] [main] run startup market analysis task once
+[2026-04-05 00:16:52] [INFO] [bootstrap] start fetching morning market data
+[2026-04-05 00:16:53] [INFO] [bootstrap] morning data fetched successfully, date=2026-04-03, raw_content_len=4360
+[2026-04-05 00:16:53] [INFO] [bootstrap] start fetching previous day review
+[2026-04-05 00:16:53] [INFO] [bootstrap] previous day review fetched successfully, review_len=3480
+[2026-04-05 00:16:53] [INFO] [bootstrap] start llm analysis for morning market data
