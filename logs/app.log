@@ -19,3 +19,7 @@ nohup: ignoring input
 [2026-04-04 19:02:28] [INFO] [bootstrap] daily market analysis card sent
 [2026-04-04 19:02:28] [INFO] [main] scheduler started
 [2026-04-04 19:02:28] [INFO] [scheduler.daily] next run at 2026-04-05 09:00:00 CST, waiting 50251 seconds
+[2026-04-04 19:06:25] [INFO] [bootstrap] no new cls telegraphs to analyze and upsert
+[2026-04-04 19:06:25] [INFO] [bootstrap] sector 3d daily summary updated, biz_date=2026-04-04, sector_count=560, total_news_count=2173, total_score_sum=41314
+[2026-04-04 19:06:25] [INFO] [bootstrap] sector investment preference ranking updated, biz_date=2026-04-04, sector_count=560, total_news_count=1007
+[2026-04-04 19:06:25] [INFO] [bootstrap] sector market heat ranking updated, biz_date=2026-04-04, sector_count=560, total_news_count=1007
