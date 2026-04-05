@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title></title>
+    <style>
+        :root {
+            --bg-main: #0a0e1f;
+            --bg-card: #12182b;
+            --bg-card-light: #181e33;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --border-color: #273049;
+            --accent-red: #ff6b6b;
+            --accent-green: #4ade80;
+            --accent-yellow: #facc15;
+            --accent-blue: #60a5fa;
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+        body {
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+            padding: 16px;
+        }
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 600;
+        }
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, #60a5fa, #a78bfa);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+        .grid-container {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 16px;
+        }
+        .card {
+            background-color: var(--bg-card);
+            border-radius: 10px;
+            padding: 16px;
+            border: 1px solid var(--border-color);
+        }
+        .index-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        .index-card {
+            background: linear-gradient(135deg, #1a1a2e, #2d1f30);
+            border-radius: 10px;
+            padding: 16px;
+            border: 1px solid rgba(255,107,107,0.15);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .index-info .name {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+        .index-info .value {
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .index-info .change {
+            font-size: 13px;
+            color: var(--accent-red);
+        }
+        .index-trend {
+            width: 40px;
+            height: 40px;
+            opacity: 0.7;
+        }
+        .left-col {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .sentiment-row {
+            display: grid;
+            grid-template-columns: repeat(3,1fr);
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .sentiment-card {
+            padding: 12px;
+            border-radius: 8px;
+        }
+        .sentiment-good {
+            background-color: rgba(74,222,128,0.1);
+            border: 1px solid rgba(74,222,128,0.2);
+        }
+        .sentiment-neutral {
+            background-color: rgba(139,148,158,0.1);
+            border: 1px solid rgba(139,148,158,0.2);
+        }
+        .sentiment-bad {
+            background-color: rgba(255,107,107,0.1);
+            border: 1px solid rgba(255,107,107,0.2);
+        }
+        .sentiment-percent {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .sentiment-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        .sentiment-change {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        .filter-buttons {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .filter-btn {
+            padding: 6px 16px;
+            border-radius: 6px;
+            border: none;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .filter-btn.is-active {
+            outline: 1px solid var(--accent-blue);
+            box-shadow: 0 0 0 1px rgba(96,165,250,0.25) inset;
+        }
+        .btn-good {
+            background-color: rgba(74,222,128,0.15);
+            color: var(--accent-green);
+        }
+        .btn-bad {
+            background-color: rgba(255,107,107,0.15);
+            color: var(--accent-red);
+        }
+        .btn-neutral {
+            background-color: rgba(139,148,158,0.15);
+            color: var(--text-secondary);
+        }
+        .news-list {
+            max-height: 600px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .news-item {
+            background-color: var(--bg-card-light);
+            border-radius: 8px;
+            padding: 12px;
+            border-left: 3px solid var(--accent-blue);
+        }
+        .news-title {
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 6px;
+        }
+        .news-desc {
+            font-size: 11px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+            margin-bottom: 6px;
+        }
+        .news-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+        .tag-positive {
+            color: var(--accent-green);
+            font-size: 11px;
+            font-weight: 500;
+        }
+        .tag-negative {
+            color: var(--accent-red);
+            font-size: 11px;
+            font-weight: 500;
+        }
+        .tag-neutral {
+            color: var(--text-secondary);
+            font-size: 11px;
+            font-weight: 500;
+        }
+        .section-title {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+        .section-title .icon {
+            width: 20px;
+            height: 20px;
+            background: linear-gradient(135deg, #f97316, #facc15);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+        }
+        .daily-analysis {
+            background-color: var(--bg-card-light);
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .analysis-item {
+            margin-bottom: 16px;
+            border: 1px solid rgba(250,204,21,0.2);
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .analysis-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .rank-num {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background-color: rgba(255,107,107,0.2);
+            color: var(--accent-red);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .theme-name {
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .tag-core {
+            font-size: 10px;
+            background-color: rgba(255,107,107,0.2);
+            color: var(--accent-red);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        .tag-secondary {
+            font-size: 10px;
+            background-color: rgba(250,204,21,0.2);
+            color: var(--accent-yellow);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        .analysis-reason {
+            font-size: 11px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+        .suggestion-box {
+            background-color: rgba(96,165,250,0.1);
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 16px;
+        }
+        .suggestion-title {
+            font-size: 12px;
+            font-weight: 500;
+            margin-bottom: 6px;
+        }
+        .suggestion-content {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        @media (max-width: 1024px) {
+            .grid-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header-top">
+        <div class="logo">
+            <div class="logo-icon" id="logoIcon"></div>
+            <div>
+                <div id="brandTitle"></div>
+                <div id="brandSubtitle" style="font-size: 11px; color: var(--text-secondary);"></div>
+            </div>
+        </div>
+        <div id="liveStatus" style="font-size: 11px; color: var(--text-secondary);"></div>
+    </div>
+
+    <!-- 指数卡片 -->
+    <div class="index-row">
+        <div class="index-card">
+            <div class="index-info">
+                <div class="name" id="indexName1">上证指数</div>
+                <div class="value"><span id="indexValue1">--</span> <span class="change" id="indexChange1">--</span></div>
+                <div style="font-size: 11px; color: var(--text-secondary);" id="indexDelta1"></div>
+            </div>
+            <div class="index-trend">
+                <svg viewBox="0 0 40 40" fill="none">
+                    <path d="M5,30 Q15,25 20,20 T35,10" stroke="#ff6b6b" stroke-width="2" fill="none"/>
+                </svg>
+            </div>
+        </div>
+        <div class="index-card">
+            <div class="index-info">
+                <div class="name" id="indexName2">深证成指</div>
+                <div class="value"><span id="indexValue2">--</span> <span class="change" id="indexChange2">--</span></div>
+                <div style="font-size: 11px; color: var(--text-secondary);" id="indexDelta2"></div>
+            </div>
+            <div class="index-trend">
+                <svg viewBox="0 0 40 40" fill="none">
+                    <path d="M5,25 Q15,20 20,18 T35,10" stroke="#ff6b6b" stroke-width="2" fill="none"/>
+                </svg>
+            </div>
+        </div>
+        <div class="index-card">
+            <div class="index-info">
+                <div class="name" id="indexName3">创业板指</div>
+                <div class="value"><span id="indexValue3">--</span> <span class="change" id="indexChange3">--</span></div>
+                <div style="font-size: 11px; color: var(--text-secondary);" id="indexDelta3"></div>
+            </div>
+            <div class="index-trend">
+                <svg viewBox="0 0 40 40" fill="none">
+                    <path d="M5,28 Q15,22 20,15 T35,8" stroke="#ff6b6b" stroke-width="2" fill="none"/>
+                </svg>
+            </div>
+        </div>
+    </div>
+
+    <div class="grid-container">
+        <!-- 左侧：实时资讯 -->
+        <div class="left-col">
+            <div class="card">
+                <div class="sentiment-row">
+                    <div class="sentiment-card sentiment-good">
+                        <div class="sentiment-percent" id="sentimentGoodPercent"></div>
+                        <div class="sentiment-label" id="sentimentGoodLabel"></div>
+                        <div class="sentiment-change" id="sentimentGoodChange"></div>
+                    </div>
+                    <div class="sentiment-card sentiment-neutral">
+                        <div class="sentiment-percent" id="sentimentNeutralPercent"></div>
+                        <div class="sentiment-label" id="sentimentNeutralLabel"></div>
+                        <div class="sentiment-change" id="sentimentNeutralChange"></div>
+                    </div>
+                    <div class="sentiment-card sentiment-bad">
+                        <div class="sentiment-percent" id="sentimentBadPercent"></div>
+                        <div class="sentiment-label" id="sentimentBadLabel"></div>
+                        <div class="sentiment-change" id="sentimentBadChange"></div>
+                    </div>
+                </div>
+                <div style="margin-bottom: 12px;">
+                    <input type="text" id="searchInput" style="width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-main); color: var(--text-primary); font-size: 12px;">
+                </div>
+                <div class="filter-buttons" id="filterButtons">
+                </div>
+                <div class="news-list" id="newsList">
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧：盘前分析 -->
+        <div class="card">
+            <div class="section-title">
+                <div class="icon" id="analysisIcon"></div>
+                <div id="analysisTitle"></div>
+                <div id="analysisMeta" style="margin-left: auto; background-color: rgba(96,165,250,0.15); color: var(--accent-blue); padding: 4px 8px; border-radius: 4px; font-size: 11px;"></div>
+            </div>
+            <div class="daily-analysis" id="analysisContent">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const DATA_BASE_URL = "./test_mongo_json";
+        const dashboardState = {
+            newsItems: [],
+            marketAnalysis: null,
+            preferenceRanking: null,
+            heatRanking: null,
+            activeSector: "",
+            keyword: "",
+        };
+
+        function pickLatestRecord(payload) {
+            if (Array.isArray(payload)) {
+                return payload[payload.length - 1] || null;
+            }
+
+            return payload || null;
+        }
+
+        function getArray(payload) {
+            if (Array.isArray(payload)) {
+                return payload;
+            }
+
+            if (payload && Array.isArray(payload.data)) {
+                return payload.data;
+            }
+
+            return [];
+        }
+
+        async function loadJsonFile(fileName) {
+            const response = await fetch(`${DATA_BASE_URL}/${fileName}`);
+
+            if (!response.ok) {
+                throw new Error(`failed to load ${fileName}`);
+            }
+
+            return response.json();
+        }
+
+        function formatAnalysisDate() {
+            const date = new Date();
+            return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+        }
+
+        function setText(id, value) {
+            const node = document.getElementById(id);
+            if (node) {
+                node.textContent = value || "";
+            }
+        }
+
+        function formatNumber(value, fractionDigits = 2) {
+            const numericValue = Number(value);
+            if (!Number.isFinite(numericValue)) {
+                return "--";
+            }
+
+            return numericValue.toFixed(fractionDigits);
+        }
+
+        function formatSignedPercent(value) {
+            const numericValue = Number(value);
+            if (!Number.isFinite(numericValue)) {
+                return "--";
+            }
+
+            const prefix = numericValue > 0 ? "+" : "";
+            return `${prefix}${numericValue.toFixed(2)}%`;
+        }
+
+        function formatSignedValue(value) {
+            const numericValue = Number(value);
+            if (!Number.isFinite(numericValue)) {
+                return "";
+            }
+
+            const prefix = numericValue > 0 ? "+" : "";
+            return `${prefix}${numericValue.toFixed(2)}`;
+        }
+
+        function formatPublishTime(value) {
+            if (value === null || value === undefined || value === "") {
+                return "";
+            }
+
+            const numericValue = Number(value);
+            if (Number.isFinite(numericValue)) {
+                const date = new Date(numericValue < 10000000000 ? numericValue * 1000 : numericValue);
+                if (!Number.isNaN(date.getTime())) {
+                    return date.toLocaleString("zh-CN", { hour12: false });
+                }
+            }
+
+            const date = new Date(value);
+            if (!Number.isNaN(date.getTime())) {
+                return date.toLocaleString("zh-CN", { hour12: false });
+            }
+
+            return String(value);
+        }
+
+        function buildShell(newsItems, marketAnalysis, preferenceRanking, heatRanking) {
+            const source = marketAnalysis?.source || newsItems[0]?.subjects?.[0] || "";
+            const subtitle = marketAnalysis?.analysis_date || marketAnalysis?.biz_date || "";
+
+            setText("brandTitle", "资讯面板");
+            setText("brandSubtitle", subtitle);
+            setText("liveStatus", newsItems.length ? `共 ${newsItems.length} 条` : "");
+            setText("analysisIcon", source ? source.slice(0, 1) : "");
+            setText("analysisTitle", marketAnalysis?.analysis_date || marketAnalysis?.biz_date || "");
+            setText("analysisMeta", marketAnalysis?.ranking_type || "");
+            setText("logoIcon", source ? source.slice(0, 1) : "");
+
+            const searchInput = document.getElementById("searchInput");
+            if (searchInput) {
+                searchInput.placeholder = newsItems[0]?.subjects?.slice(0, 2).join(" ") || "";
+                searchInput.oninput = (event) => {
+                    dashboardState.keyword = (event.target?.value || "").trim();
+                    applyCurrentFilters();
+                };
+            }
+
+            const filterButtons = document.getElementById("filterButtons");
+            if (filterButtons) {
+                const sectors = [
+                    ...(Array.isArray(preferenceRanking?.sector_rankings) ? preferenceRanking.sector_rankings : []),
+                    ...(Array.isArray(heatRanking?.sector_rankings) ? heatRanking.sector_rankings : []),
+                ]
+                    .map((item) => item?.sector)
+                    .filter(Boolean)
+                    .slice(0, 3);
+
+                const buttons = ["全部", ...sectors];
+                filterButtons.innerHTML = buttons
+                    .map((sector) => `<button type="button" class="filter-btn" data-sector="${sector}">${sector}</button>`)
+                    .join("");
+
+                filterButtons.querySelectorAll(".filter-btn").forEach((button) => {
+                    button.addEventListener("click", () => {
+                        applySectorFilter(button.dataset.sector || "全部");
+                    });
+                });
+            }
+        }
+
+        function normalizeText(value) {
+            return String(value || "").toLowerCase();
+        }
+
+        function itemMatchesSector(item, sector) {
+            if (!sector || sector === "全部") {
+                return true;
+            }
+
+            const lowerSector = normalizeText(sector);
+            const subjects = Array.isArray(item.subjects) ? item.subjects : [];
+            const sectors = Array.isArray(item.llm_analysis?.sectors) ? item.llm_analysis.sectors : [];
+            const sourceText = [item.event_id, item.content, ...subjects, ...sectors].map(normalizeText).join(" ");
+
+            return sourceText.includes(lowerSector);
+        }
+
+        function itemMatchesKeyword(item, keyword) {
+            if (!keyword) {
+                return true;
+            }
+
+            const lowerKeyword = normalizeText(keyword);
+            const subjects = Array.isArray(item.subjects) ? item.subjects : [];
+            const sectors = Array.isArray(item.llm_analysis?.sectors) ? item.llm_analysis.sectors : [];
+            const reason = item.llm_analysis?.reason || "";
+            const sourceText = [item.event_id, item.content, reason, ...subjects, ...sectors].map(normalizeText).join(" ");
+
+            return sourceText.includes(lowerKeyword);
+        }
+
+        function rankingMatchesSector(item, sector) {
+            if (!sector || sector === "全部") {
+                return true;
+            }
+
+            return normalizeText(item?.sector).includes(normalizeText(sector));
+        }
+
+        function setActiveFilterButton(sector) {
+            document.querySelectorAll("#filterButtons .filter-btn").forEach((button) => {
+                button.classList.toggle("is-active", (button.dataset.sector || "全部") === sector);
+            });
+        }
+
+        function applyCurrentFilters() {
+            setActiveFilterButton(dashboardState.activeSector);
+
+            const filteredNews = dashboardState.newsItems.filter(
+                (item) => itemMatchesSector(item, dashboardState.activeSector) && itemMatchesKeyword(item, dashboardState.keyword),
+            );
+            const filteredPreference = {
+                ...dashboardState.preferenceRanking,
+                sector_rankings: Array.isArray(dashboardState.preferenceRanking?.sector_rankings)
+                    ? dashboardState.preferenceRanking.sector_rankings.filter((item) => rankingMatchesSector(item, dashboardState.activeSector))
+                    : [],
+            };
+            const filteredHeat = {
+                ...dashboardState.heatRanking,
+                sector_rankings: Array.isArray(dashboardState.heatRanking?.sector_rankings)
+                    ? dashboardState.heatRanking.sector_rankings.filter((item) => rankingMatchesSector(item, dashboardState.activeSector))
+                    : [],
+            };
+
+            renderSentiment(filteredNews);
+            renderNews(filteredNews);
+            renderAnalysis(filteredPreference, filteredHeat, dashboardState.marketAnalysis);
+        }
+
+        function applySectorFilter(sector) {
+            dashboardState.activeSector = sector || "全部";
+            applyCurrentFilters();
+        }
+
+        function readReviewIndices(reviewText) {
+            if (!reviewText) {
+                return [];
+            }
+
+            const candidates = ["上证指数", "深证成指", "创业板指", "中小综指", "期货连续", "纳斯达克", "道琼斯", "恒生指数", "美元指数"];
+            return candidates
+                .map((name) => {
+                    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                    const pattern = new RegExp(`${escapedName}([0-9]+(?:\\.[0-9]+)?)\\s*([+-][0-9]+(?:\\.[0-9]+)?)\\s*([+-][0-9]+(?:\\.[0-9]+)?)%`);
+                    const match = reviewText.match(pattern);
+
+                    if (!match) {
+                        return null;
+                    }
+
+                    return {
+                        name,
+                        value: match[1],
+                        delta: match[2],
+                        change: match[3],
+                    };
+                })
+                .filter(Boolean)
+                .slice(0, 3);
+        }
+
+        function getNewsTitle(item, index) {
+            const content = String(item.content || "").trim();
+
+            if (!content) {
+                const subjects = Array.isArray(item.subjects) ? item.subjects.filter(Boolean) : [];
+                if (subjects.length > 0) {
+                    return subjects.slice(0, 3).join("、");
+                }
+
+                if (item.event_id) {
+                    return String(item.event_id);
+                }
+
+                return `资讯 ${index + 1}`;
+            }
+
+            return content.length > 28 ? `${content.slice(0, 28)}...` : content;
+        }
+
+        function getScoreLabel(score) {
+            if (typeof score !== "number" || Number.isNaN(score)) {
+                return { className: "tag-neutral", text: "未评分" };
+            }
+
+            if (score >= 0.66) {
+                return { className: "tag-positive", text: `+${Math.round(score * 10) / 10}` };
+            }
+
+            if (score <= 0.33) {
+                return { className: "tag-negative", text: `-${Math.round((1 - score) * 10) / 10}` };
+            }
+
+            return { className: "tag-neutral", text: `${Math.round(score * 10) / 10}` };
+        }
+
+        function getAnalysisType(score) {
+            return typeof score === "number" && score >= 0.7 ? "core" : "secondary";
+        }
+
+        function parseIndexFromReview(text, indexName) {
+            if (!text) {
+                return null;
+            }
+
+            const escapedName = indexName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const pattern = new RegExp(`${escapedName}([0-9]+(?:\\.[0-9]+)?)\\s*([+-][0-9]+(?:\\.[0-9]+)?)\\s*([+-][0-9]+(?:\\.[0-9]+)?)%`);
+            const match = text.match(pattern);
+
+            if (!match) {
+                return null;
+            }
+
+            return {
+                value: match[1],
+                change: match[3],
+                delta: match[2],
+            };
+        }
+
+        function renderIndices(report) {
+            const indices = readReviewIndices(report?.prev_day_review || "");
+            const slots = [
+                { nameId: "indexName1", valueId: "indexValue1", changeId: "indexChange1", deltaId: "indexDelta1" },
+                { nameId: "indexName2", valueId: "indexValue2", changeId: "indexChange2", deltaId: "indexDelta2" },
+                { nameId: "indexName3", valueId: "indexValue3", changeId: "indexChange3", deltaId: "indexDelta3" },
+            ];
+
+            slots.forEach((slot, index) => {
+                const parsed = indices[index];
+                if (!parsed) {
+                    setText(slot.nameId, "");
+                    setText(slot.valueId, "");
+                    setText(slot.changeId, "");
+                    setText(slot.deltaId, "");
+                    return;
+                }
+
+                setText(slot.nameId, parsed.name);
+                setText(slot.valueId, formatNumber(parsed.value));
+                setText(slot.changeId, `${parsed.change}%`);
+                setText(slot.deltaId, formatSignedValue(parsed.delta));
+            });
+        }
+
+        function renderSentiment(items) {
+            const total = items.length || 1;
+            const positiveCount = items.filter((item) => Number(item.llm_analysis?.score) > 0).length;
+            const neutralCount = items.filter((item) => Number(item.llm_analysis?.score) === 0).length;
+            const negativeCount = items.filter((item) => Number(item.llm_analysis?.score) < 0).length;
+
+            const positivePercent = Math.round((positiveCount / total) * 100);
+            const neutralPercent = Math.round((neutralCount / total) * 100);
+            const negativePercent = Math.max(0, 100 - positivePercent - neutralPercent);
+
+            setText("sentimentGoodPercent", `利好占比 ${positivePercent}%`);
+            setText("sentimentNeutralPercent", `中性占比 ${neutralPercent}%`);
+            setText("sentimentBadPercent", `利空占比 ${negativePercent}%`);
+            setText("sentimentGoodLabel", `利好资讯 ${positiveCount} 条`);
+            setText("sentimentNeutralLabel", `中性资讯 ${neutralCount} 条`);
+            setText("sentimentBadLabel", `利空资讯 ${negativeCount} 条`);
+            setText("sentimentGoodChange", `较昨日变化 ${positiveCount >= neutralCount ? `+${positiveCount}` : `-${neutralCount}`}`);
+            setText("sentimentNeutralChange", `较昨日变化 ${neutralCount >= negativeCount ? `+${neutralCount}` : `-${negativeCount}`}`);
+            setText("sentimentBadChange", `较昨日变化 ${negativeCount}`);
+        }
+
+        function renderNews(items) {
+            const container = document.getElementById("newsList");
+            container.innerHTML = "";
+
+            items.forEach((item, index) => {
+                const score = Number(item.llm_analysis?.score);
+                const scoreLabel = getScoreLabel(score);
+                const title = getNewsTitle(item, index);
+                const content = item.content || "";
+                const source = Array.isArray(item.subjects) && item.subjects.length > 0 ? item.subjects[0] : "";
+                const time = formatPublishTime(item.publish_ts);
+
+                const node = document.createElement("div");
+                node.className = "news-item";
+                node.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                        <div class="news-title">${title}</div>
+                        <div class="${scoreLabel.className}">${scoreLabel.text}</div>
+                    </div>
+                    <div class="news-desc">${content}</div>
+                    <div class="news-meta">
+                        <span>${source}</span>
+                        <span>${time}</span>
+                    </div>
+                `;
+                container.appendChild(node);
+            });
+
+            if (items.length === 0) {
+                container.innerHTML = "";
+            }
+        }
+
+        function renderAnalysis(preferenceRanking, heatRanking, marketAnalysis) {
+            const container = document.getElementById("analysisContent");
+            const preferenceItems = Array.isArray(preferenceRanking?.sector_rankings) ? preferenceRanking.sector_rankings.slice(0, 3) : [];
+            const heatItems = Array.isArray(heatRanking?.sector_rankings) ? heatRanking.sector_rankings.slice(0, 2) : [];
+            const mergedItems = [
+                ...preferenceItems.map((item) => ({ ...item, sourceLabel: "偏好" })),
+                ...heatItems.map((item) => ({ ...item, sourceLabel: "热度" })),
+            ];
+
+            container.innerHTML = "";
+
+            mergedItems.forEach((item, index) => {
+                const score = Number(item.final_score ?? item.count_score ?? item.event_score);
+                const type = score >= 90 || index === 0 ? "core" : "secondary";
+                const name = `${item.sector}（${item.sourceLabel}）`;
+                const reasonParts = [
+                    `排名 ${item.rank}`,
+                    Number.isFinite(Number(item.final_score)) ? `综合分 ${formatNumber(item.final_score)}` : null,
+                    Number.isFinite(Number(item.news_count)) ? `资讯数 ${item.news_count}` : null,
+                    Number.isFinite(Number(item.latest_publish_ts)) ? `最新时间 ${formatPublishTime(item.latest_publish_ts)}` : null,
+                ].filter(Boolean);
+                const reason = reasonParts.join("，");
+
+                const div = document.createElement("div");
+                div.className = "analysis-item";
+                div.innerHTML = `
+                    <div class="analysis-header">
+                        <div class="rank-num">#${index + 1}</div>
+                        <div class="theme-name">${name}</div>
+                        <span class="${type === 'core' ? 'tag-core' : 'tag-secondary'}">${type === 'core' ? '核心主线' : '次级主线'}</span>
+                    </div>
+                    <div class="analysis-reason">理由：${reason}</div>
+                `;
+                container.appendChild(div);
+            });
+
+
+        }
+
+        async function loadDashboardData() {
+            try {
+                const [newsPayload, marketAnalysisPayload, preferencePayload, heatPayload] = await Promise.all([
+                    loadJsonFile("daily_pe_reporter.cls_telegraphs.json"),
+                    loadJsonFile("daily_pe_reporter.daily_market_analysis.json"),
+                    loadJsonFile("daily_pe_reporter.sector_investment_preference_rankings.json"),
+                    loadJsonFile("daily_pe_reporter.sector_market_heat_rankings.json"),
+                ]);
+
+                const newsItems = getArray(newsPayload);
+                const marketAnalysis = pickLatestRecord(marketAnalysisPayload);
+                const preferenceRanking = pickLatestRecord(preferencePayload);
+                const heatRanking = pickLatestRecord(heatPayload);
+
+                dashboardState.newsItems = newsItems;
+                dashboardState.marketAnalysis = marketAnalysis;
+                dashboardState.preferenceRanking = preferenceRanking;
+                dashboardState.heatRanking = heatRanking;
+
+                buildShell(newsItems, marketAnalysis, preferenceRanking, heatRanking);
+                setText("analysisDate", marketAnalysis?.analysis_date || marketAnalysis?.biz_date || formatAnalysisDate());
+
+                renderIndices(marketAnalysis);
+                applySectorFilter("全部");
+            } catch (err) {
+                console.error("加载新闻失败", err);
+                document.getElementById("newsList").innerHTML = "";
+                document.getElementById("analysisContent").innerHTML = "";
+            }
+        }
+
+        // 页面加载时执行
+        window.onload = function() {
+            loadDashboardData();
+        };
+    </script>
+</body>
+</html>
