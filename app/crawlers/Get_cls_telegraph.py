@@ -7,6 +7,8 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
+from app.model import CLSTelegraph
+
 
 BASE_URL = "https://www.cls.cn/nodeapi/telegraphList"
 HEADERS = {
@@ -127,30 +129,38 @@ def extract_subjects(item: dict) -> list[str]:
     return subjects
 
 
-def normalize_item(item: dict) -> dict:
-    raw_title = item.get("title", "")
-    raw_content = item.get("content", "")
+def normalize_item(item: dict) -> CLSTelegraph | None:
+    raw_title = item.get("title") or ""
+    raw_content = item.get("content") or ""
 
     title, content = split_title_and_content(raw_title, raw_content)
-    merged_content = f"{title} {content}".strip() if title else content
 
     publish_ts, publish_time = format_publish_time(
-        item.get("ctime") or item.get("time") or item.get("created_at")
+        item.get("ctime") or item.get("time") or item.get("created_at") or item.get("publish_ts")
     )
 
-    dedup_src = f"{publish_ts}|{merged_content}"
-    event_id = item.get("event_id") or hashlib.md5(dedup_src.encode("utf-8")).hexdigest()
+    if publish_ts is None:
+        return None
 
-    return {
-        "event_id": event_id,
-        "publish_ts": publish_ts,
-        "publish_time": publish_time,
-        "subjects": extract_subjects(item),
-        "content": merged_content,
-    }
+    raw_event_id = item.get("event_id") or item.get("id")
+    if raw_event_id is None or raw_event_id == "":
+        dedup_src = f"{publish_ts}+{title}+{content}+cls"
+        event_id = hashlib.md5(dedup_src.encode("utf-8")).hexdigest()
+    else:
+        event_id = str(raw_event_id)
 
+    return CLSTelegraph(
+        event_id=event_id,
+        publish_ts=publish_ts,
+        publish_time=publish_time,
+        subjects=extract_subjects(item),
+        title=title,
+        content=content,
+        source="cls",
+        llm_analysis=None,
+    )
 
-def fetch_latest_telegraphs(rn: int = 20) -> list[dict]:
+def fetch_latest_telegraphs(rn: int = 20) -> list[CLSTelegraph]:
     params = build_latest_params(rn=rn)
 
     resp = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=15)
@@ -162,19 +172,27 @@ def fetch_latest_telegraphs(rn: int = 20) -> list[dict]:
     result = [normalize_item(x) for x in items]
 
     seen = set()
-    cleaned = []
+    cleaned: list[CLSTelegraph] = []
     for row in result:
-        if not row["content"]:
+        if row is None:
             continue
-        if row["event_id"] in seen:
+        if not row.content:
             continue
-        seen.add(row["event_id"])
+        if row.event_id in seen:
+            continue
+        seen.add(row.event_id)
         cleaned.append(row)
 
-    cleaned.sort(key=lambda x: x["publish_ts"] or 0, reverse=True)
+    cleaned.sort(key=lambda x: x.publish_ts, reverse=True)
     return cleaned
 
 
 if __name__ == "__main__":
     rows = fetch_latest_telegraphs(rn=20)
-    print(json.dumps(rows[:5], ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            [row.model_dump() for row in rows[:5]],
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
