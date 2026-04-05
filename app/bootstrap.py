@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import inspect
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -17,8 +18,20 @@ from app.crawlers.Get_Morning_Reading import fetch_and_split_morning_data
 from app.llm.Moring_Reading_llm import analyze_morning_data
 from app.crawlers.Get_fupan import fetch_fupan_full_visible_text, build_fupan_url
 from app.llm.cls_telegraph_llm import analyze_cls_telegraph
-from app.repo import CLSTelegraphRepository, DailyMarketAnalysisRepository, Sector3DDailySummaryRepository, SectorInvestmentPreferenceRankingRepository, SectorMarketHeatRankingRepository
-from app.crawlers.Get_cls_telegraph import fetch_latest_telegraphs
+from app.repo import (
+    CLSTelegraphRepository,
+    DailyMarketAnalysisRepository,
+    Sector3DDailySummaryRepository,
+    SectorInvestmentPreferenceRankingRepository,
+    SectorMarketHeatRankingRepository,
+)
+from app.crawlers.Get_cls_telegraph import (
+    fetch_latest_telegraphs as fetch_latest_cls_telegraphs,
+)
+from app.crawlers.Get_jin10_telegraph import (
+    fetch_latest_telegraphs as fetch_latest_jin10_telegraphs,
+)
+from app.model import CLSTelegraph, CLSTelegraphLLMAnalysis
 
 logger = get_logger("bootstrap")
 
@@ -38,7 +51,8 @@ class Application:
         1. 初始化飞书通知组件
         2. 初始化每日调度器
         3. 管理 Mongo 连接与各类 repository
-        4. 管理财联社电报的轮询任务
+        4. 管理市场资讯轮询任务（当前来源：CLS + Jin10）
+        5. 管理市场资讯异步消费队列（5 个 worker）
         """
         # 飞书通知器：负责把卡片实际发送到飞书群
         self.notifier = FeishuNotifier(
@@ -62,12 +76,10 @@ class Application:
         # -----------------------------
         # Mongo 相关对象
         # -----------------------------
-        # Mongo 客户端
         self.mongo_client = None
-        # 当前业务数据库对象
         self.db = None
 
-        # 财联社电报原始表 repository
+        # 统一资讯原始表 repository（CLS + Jin10 共用）
         self.cls_telegraph_repository = None
 
         # 三日内版块汇总表 repository
@@ -76,14 +88,34 @@ class Application:
         # 市场投资倾向排行榜 repository
         self.sector_investment_preference_ranking_repository = None
 
-         # 市场热度排行榜 repository
+        # 市场热度排行榜 repository
         self.sector_market_heat_ranking_repository = None
 
         # 每日盘前分析表 repository
         self.daily_market_analysis_repository = None
 
-        # 财联社电报轮询任务句柄，启动后会保存 create_task 的返回值，shutdown 时用于取消任务
+        # 轮询任务句柄
         self.cls_telegraph_polling_task = None
+
+        # -----------------------------
+        # 市场资讯异步消费队列
+        # -----------------------------
+        # 去重完成后的资讯统一入这个队列，由 worker 并发消费
+        self.market_telegraph_queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
+
+        # 固定 5 个 worker
+        self.market_telegraph_worker_count = 5
+        self.market_telegraph_worker_tasks: list[asyncio.Task] = []
+
+        # 正在队列中 / 正在 worker 处理中但尚未写库完成的 event_id
+        # 作用：避免“尚未入库完成前，被下一轮轮询再次抓到并重复入队”
+        self.pending_event_ids: set[str] = set()
+        self.pending_event_ids_lock = asyncio.Lock()
+
+        # 版块衍生视图刷新事件 + 后台刷新任务
+        # worker 处理完后只打事件，不在每条上直接重刷，避免太重
+        self.sector_views_refresh_event = asyncio.Event()
+        self.sector_views_refresh_task = None
 
     def get_a_share_trade_dates(self, now: datetime | None = None) -> tuple[str, str]:
         """
@@ -148,9 +180,9 @@ class Application:
         - 如果当天重复执行，会通过 upsert 覆盖更新，而不是新增多条
         """
         return {
-            "analysis_date": analysis_date,   # 唯一键：同一天只保留一条
-            "trade_date": trade_date,         # 当前交易日，格式 YYYYMMDD
-            "prev_trade_date": prev_trade_date,  # 前一交易日，格式 YYYYMMDD
+            "analysis_date": analysis_date,
+            "trade_date": trade_date,
+            "prev_trade_date": prev_trade_date,
             "source": morning_data.get("source"),
             "morning_data": morning_data,
             "prev_day_review": prev_day_review,
@@ -213,23 +245,300 @@ class Application:
 
         logger.warning("daily scheduler has no shutdown()/stop() method, skip stopping")
 
-    async def analyze_single_cls_telegraph(self, row: dict) -> tuple[dict, bool]:
+    @staticmethod
+    def _normalize_dedup_text(text: str) -> str:
         """
-        对单条财联社电报执行 LLM 分析。
+        文本归一化，用于跨平台内容去重。
 
-        输入：
-        - row: 财联社电报原始数据，至少包含 content / subjects / event_id
+        处理目标：
+        1. 去站点来源前后缀
+        2. 去日期来源口径差异
+        3. 去空白、换行、标点差异
+        4. 尽量把“同一条资讯的不同平台文案包装”压缩到相近形式
+        """
+        text = (text or "").strip()
+
+        if not text:
+            return ""
+
+        # 去来源前缀 / 口径差异
+        text = re.sub(r"财联社\d{1,2}月\d{1,2}日电[，,:：]?", "", text)
+        text = re.sub(r"金十数据\d{1,2}月\d{1,2}日讯[，,:：]?", "", text)
+        text = re.sub(r"^\[?金十数据\]?[，,:：]?", "", text)
+        text = re.sub(r"^\[?财联社\]?[，,:：]?", "", text)
+
+        # 去尾部站点标识
+        text = re.sub(r"\s*[-—]\s*金十数据\s*$", "", text)
+        text = re.sub(r"\s*[-—]\s*财联社\s*$", "", text)
+        text = re.sub(r"\s*金十数据\s*$", "", text)
+        text = re.sub(r"\s*财联社\s*$", "", text)
+
+        # 去引号、括号、标点差异
+        text = re.sub(r"[“”\"'`‘’]", "", text)
+        text = re.sub(r"[，。；：！？、】【（）()、,.;:!?·\-—\[\]]", "", text)
+
+        # 去空白
+        text = re.sub(r"\s+", "", text)
+
+        return text.lower()
+
+    @staticmethod
+    def _is_valid_dedup_title(title: str) -> bool:
+        """
+        判断标题是否适合用来做去重。
+
+        规则：
+        - 太短的不算
+        - 太模板化、太泛化的不算
+        - 这些情况退回按内容去重更稳
+        """
+        title = (title or "").strip()
+        if not title:
+            return False
+
+        if len(title) < 6:
+            return False
+
+        bad_patterns = [
+            r"^金十图示",
+            r"^新闻联播今日要点",
+            r"^今日要点$",
+            r"^金十数据$",
+            r"^财联社$",
+            r"^快讯$",
+        ]
+
+        for pattern in bad_patterns:
+            if re.search(pattern, title):
+                return False
+
+        return True
+
+    @staticmethod
+    def _strip_title_from_content(content: str, title: str) -> str:
+        """
+        如果正文开头就是标题，则把标题从正文前缀剥掉。
+
+        作用：
+        - 有的平台是“标题 + 正文”
+        - 有的平台只有“正文”
+        - 去掉标题后，更容易让两边内容 key 对齐
+        """
+        content = (content or "").strip()
+        title = (title or "").strip()
+
+        if not content or not title:
+            return content
+
+        # 兼容：
+        # 1. 标题 正文
+        # 2. 【标题】正文
+        # 3. 标题：正文
+        pattern = rf"^\s*[【\[]?{re.escape(title)}[】\]]?\s*[-—:：，,\s]*"
+        stripped = re.sub(pattern, "", content, count=1)
+
+        return stripped.strip() or content
+
+    def _build_cross_source_dedup_keys(self, row: CLSTelegraph) -> set[str]:
+        """
+        为单条资讯构造“跨平台去重 key 集合”。
+
+        设计思想：
+        - 不是只生成一个 key，而是生成一组 key
+        - 这样能处理：
+          1. 一边有标题、一边没标题
+          2. 一边正文里带标题、一边正文不带标题
+          3. 来源包装口径不同但本质是同一条消息
+
+        规则：
+        - 有有效标题时：加入 title key
+        - 同时始终加入 content key
+        - 如果标题存在，还会再生成一个“去掉标题前缀后的 content key”
+        """
+        keys = set()
+
+        title = (row.title or "").strip()
+        content = (row.content or "").strip()
+
+        if self._is_valid_dedup_title(title):
+            norm_title = self._normalize_dedup_text(title)
+            if norm_title:
+                keys.add(f"title::{norm_title}")
+
+        norm_content = self._normalize_dedup_text(content)
+        if len(norm_content) >= 12:
+            keys.add(f"content::{norm_content}")
+
+        if title:
+            stripped_content = self._strip_title_from_content(content, title)
+            norm_stripped_content = self._normalize_dedup_text(stripped_content)
+            if len(norm_stripped_content) >= 12:
+                keys.add(f"content::{norm_stripped_content}")
+
+        return keys
+
+    @staticmethod
+    def _build_duplicate_preference_score(row: CLSTelegraph) -> tuple:
+        """
+        当两条资讯被判定为重复时，决定保留哪一条。
+
+        当前偏好：
+        1. 正文更长的优先（信息量更大）
+        2. subjects 更多的优先
+        3. 有标题的优先
+        4. CLS 略微优先（因为你原始链路就是从 CLS 起家的）
+        5. publish_ts 更新的优先
+        """
+        return (
+            len((row.content or "").strip()),
+            len(row.subjects or []),
+            1 if (row.title or "").strip() else 0,
+            1 if row.source == "cls" else 0,
+            row.publish_ts or 0,
+        )
+
+    def _pick_better_duplicate_row(
+        self,
+        old_row: CLSTelegraph,
+        new_row: CLSTelegraph,
+    ) -> CLSTelegraph:
+        """
+        在两条重复资讯里挑一条更适合保留的。
+        """
+        old_score = self._build_duplicate_preference_score(old_row)
+        new_score = self._build_duplicate_preference_score(new_row)
+
+        return new_row if new_score > old_score else old_row
+
+    def _dedup_rows_in_batch(self, rows: list[CLSTelegraph]) -> list[CLSTelegraph]:
+        """
+        对“本轮合并后的 CLS + Jin10 批次”做内容级去重。
+
+        逻辑：
+        - 先按 dedup key 集合判断是否重复
+        - 如果重复，保留信息更完整的一条
+        - 这样能拦住“同一轮里两个平台同时抓到同一条资讯”的情况
+        """
+        if not rows:
+            return rows
+
+        deduped_rows: list[CLSTelegraph] = []
+        deduped_keys: list[set[str]] = []
+
+        for row in rows:
+            row_keys = self._build_cross_source_dedup_keys(row)
+
+            if not row_keys:
+                deduped_rows.append(row)
+                deduped_keys.append(set())
+                continue
+
+            matched_index = None
+            for idx, existing_keys in enumerate(deduped_keys):
+                if row_keys & existing_keys:
+                    matched_index = idx
+                    break
+
+            if matched_index is None:
+                deduped_rows.append(row)
+                deduped_keys.append(set(row_keys))
+                continue
+
+            kept_row = deduped_rows[matched_index]
+            better_row = self._pick_better_duplicate_row(kept_row, row)
+
+            deduped_rows[matched_index] = better_row
+            deduped_keys[matched_index] = deduped_keys[matched_index] | row_keys
+
+        deduped_rows.sort(key=lambda x: x.publish_ts or 0)
+
+        removed_count = len(rows) - len(deduped_rows)
+        if removed_count > 0:
+            logger.info("batch cross-source dedup removed %s duplicate rows", removed_count)
+
+        return deduped_rows
+
+    async def _try_register_pending_event_id(self, event_id: str) -> bool:
+        """
+        尝试把 event_id 注册到“待处理集合”中。
 
         返回：
-        - analysis_dict: 标准化后的 LLM 分析结果
-        - is_success: 本次 LLM 分析是否成功
-
-        兜底策略：
-        - 内容为空：直接返回中性结果
-        - LLM 报错：记录异常，并以中性结果兜底入库，保证主流程不中断
+        - True：本次成功注册，可以入队
+        - False：为空或已在待处理集合中，跳过，避免重复入队
         """
-        content = (row.get("content") or "").strip()
-        subjects = row.get("subjects") or []
+        if not event_id:
+            return False
+
+        async with self.pending_event_ids_lock:
+            if event_id in self.pending_event_ids:
+                return False
+            self.pending_event_ids.add(event_id)
+            return True
+
+    async def _unregister_pending_event_id(self, event_id: str):
+        """
+        从待处理集合中移除 event_id。
+        """
+        if not event_id:
+            return
+
+        async with self.pending_event_ids_lock:
+            self.pending_event_ids.discard(event_id)
+
+    async def _enqueue_market_telegraphs(
+        self,
+        rows: list[CLSTelegraph],
+        send_insert_card: bool,
+    ) -> int:
+        """
+        将去重后的资讯批量加入队列。
+
+        注意：
+        - 这里只负责入队，不做 LLM 分析
+        - send_insert_card 也随任务一起进入队列，兼容 startup 首次灌库不发卡
+        """
+        if not rows:
+            return 0
+
+        enqueued_count = 0
+
+        for row in rows:
+            can_enqueue = await self._try_register_pending_event_id(row.event_id)
+            if not can_enqueue:
+                logger.info(
+                    "skip enqueue duplicated pending telegraph, source=%s, event_id=%s",
+                    row.source,
+                    row.event_id,
+                )
+                continue
+
+            try:
+                await self.market_telegraph_queue.put((row, send_insert_card))
+                enqueued_count += 1
+            except Exception:
+                await self._unregister_pending_event_id(row.event_id)
+                raise
+
+        return enqueued_count
+
+    async def analyze_single_telegraph(
+        self,
+        row: CLSTelegraph,
+    ) -> tuple[CLSTelegraphLLMAnalysis | dict, bool]:
+        """
+        对单条资讯执行 LLM 分析。
+
+        说明：
+        - 现在 CLS 和 Jin10 都统一成 CLSTelegraph
+        - 因此这里复用同一套单条分析逻辑
+        - 后续如果 Jin10 想做 source 定制 prompt，也只需要在这里扩展
+
+        返回：
+        - analysis: 标准化后的 LLM 分析结果
+        - is_success: 本次 LLM 分析是否成功
+        """
+        content = (row.content or "").strip()
+        subjects = row.subjects or []
 
         if not content:
             return (
@@ -250,16 +559,18 @@ class Application:
             )
 
             logger.info(
-                "cls telegraph llm analyzed successfully, event_id=%s, score=%s",
-                row.get("event_id"),
-                analysis.get("score"),
+                "telegraph llm analyzed successfully, source=%s, event_id=%s, score=%s",
+                row.source,
+                row.event_id,
+                analysis.score,
             )
             return analysis, True
 
         except Exception as e:
             logger.exception(
-                "cls telegraph llm analyze failed, event_id=%s, error=%s",
-                row.get("event_id"),
+                "telegraph llm analyze failed, source=%s, event_id=%s, error=%s",
+                row.source,
+                row.event_id,
                 e,
             )
 
@@ -273,13 +584,76 @@ class Application:
                 False,
             )
 
+    async def _market_telegraph_worker(self, worker_no: int):
+        """
+        市场资讯 worker。
+
+        职责：
+        1. 从队列取出去重后的单条资讯
+        2. 执行 LLM 分析
+        3. 回填 llm_analysis 并 upsert 入库
+        4. 若为新插入且允许发卡，则发送飞书卡片
+        5. 触发版块衍生视图刷新事件
+        """
+        while True:
+            got_item = False
+            row = None
+            send_insert_card = True
+
+            try:
+                row, send_insert_card = await self.market_telegraph_queue.get()
+                got_item = True
+
+                llm_analysis, llm_ok = await self.analyze_single_telegraph(row)
+                row.llm_analysis = llm_analysis
+
+                update_result = await self.cls_telegraph_repository.upsert_one(row)
+                is_new_insert = bool(getattr(update_result, "upserted_id", None))
+
+                card_ok = None
+                if is_new_insert and send_insert_card:
+                    card_ok = await self.send_cls_telegraph_insert_card(row)
+
+                logger.info(
+                    "market telegraph processed by worker, worker=%s, source=%s, event_id=%s, "
+                    "llm_ok=%s, is_new_insert=%s, card_ok=%s, queue_size=%s",
+                    worker_no,
+                    row.source,
+                    row.event_id,
+                    llm_ok,
+                    is_new_insert,
+                    card_ok,
+                    self.market_telegraph_queue.qsize(),
+                )
+
+                # 有新处理完成的数据后，通知后台统一刷新衍生视图
+                self.sector_views_refresh_event.set()
+
+            except asyncio.CancelledError:
+                logger.info("market telegraph worker cancelled, worker=%s", worker_no)
+                raise
+            except Exception as e:
+                logger.exception(
+                    "market telegraph worker failed, worker=%s, source=%s, event_id=%s, error=%s",
+                    worker_no,
+                    getattr(row, "source", None),
+                    getattr(row, "event_id", None),
+                    e,
+                )
+            finally:
+                if row is not None:
+                    await self._unregister_pending_event_id(row.event_id)
+
+                if got_item:
+                    self.market_telegraph_queue.task_done()
+
     async def _refresh_sector_3d_daily_summary(self):
         """
         重建“当天实时三日内版块汇总”。
 
         说明：
         - 该方法只负责触发 repository 重算并记录日志
-        - 失败只记日志，不影响财联社主同步链路
+        - 失败只记日志，不影响资讯主同步链路
         - 即使没有新增新闻，只要窗口右移，也有必要重建
         """
         if self.sector_3d_daily_summary_repository is None:
@@ -305,7 +679,6 @@ class Application:
         说明：
         - 基于 cls_telegraphs 已入库并已完成 llm_analysis 的数据进行重算
         - 失败只记日志，不影响主流程
-        - 与三日版块汇总并行存在，属于另一张衍生结果表
         """
         if self.sector_investment_preference_ranking_repository is None:
             logger.warning("sector_investment_preference_ranking_repository is not initialized")
@@ -322,7 +695,6 @@ class Application:
         except Exception as e:
             logger.exception("refresh sector investment preference ranking failed: %s", e)
 
-
     async def _refresh_sector_market_heat_ranking(self):
         """
         重建“当天市场热度排行榜”。
@@ -331,7 +703,6 @@ class Application:
         - 基于 cls_telegraphs 已入库的数据进行重算
         - 只使用数量 + 时间，不使用单条新闻 score
         - 失败只记日志，不影响主流程
-        - 与三日版块汇总、市场投资倾向排行并行存在，属于另一张衍生结果表
         """
         if self.sector_market_heat_ranking_repository is None:
             logger.warning("sector_market_heat_ranking_repository is not initialized")
@@ -358,20 +729,45 @@ class Application:
         3. 市场热度排行榜
 
         设计目的：
-        - 让 sync_cls_telegraphs_once() 只调一个入口
-        - 避免多个出口路径里漏掉某个衍生视图刷新
+        - 让同步入口只调一个刷新方法
+        - 避免多处出口漏刷新
         """
         await self._refresh_sector_3d_daily_summary()
         await self._refresh_sector_investment_preference_ranking()
         await self._refresh_sector_market_heat_ranking()
 
+    async def _sector_views_refresh_loop(self):
+        """
+        版块衍生视图后台刷新循环。
+
+        设计：
+        - worker 每处理完一条只 set event
+        - 这里统一做一个轻微 debounce，再批量刷新
+        - 避免 5 个 worker 每条都直接触发全量重算
+        """
+        while True:
+            try:
+                await self.sector_views_refresh_event.wait()
+
+                # 简单 debounce：等几秒，尽量合并一批已完成处理的结果
+                await asyncio.sleep(5)
+
+                self.sector_views_refresh_event.clear()
+                await self._refresh_sector_views()
+
+            except asyncio.CancelledError:
+                logger.info("sector views refresh loop cancelled")
+                raise
+            except Exception as e:
+                logger.exception("sector views refresh loop failed: %s", e)
+
     async def fetch_new_cls_telegraphs(
         self,
         latest_ts: int | None,
         rn: int = 20,
-    ) -> list[dict]:
+    ) -> list[CLSTelegraph]:
         """
-        抓取最新一批财联社电报候选数据。
+        抓取最新一批 CLS 电报候选数据。
 
         规则：
         1. 每次只抓最新 rn 条
@@ -381,14 +777,17 @@ class Application:
         5. 按 event_id 去重
         6. 若 latest_ts 不为空，则过滤掉时间更早的数据
         7. 最终按 publish_ts 升序返回，方便后续顺序处理
+
+        说明：
+        - 这里 latest_ts 是 CLS 自己的最新时间，不是全局最新时间
         """
-        batch = await asyncio.to_thread(fetch_latest_telegraphs, rn)
+        batch = await asyncio.to_thread(fetch_latest_cls_telegraphs, rn)
 
         if not batch:
             logger.info("no cls telegraphs fetched")
             return []
 
-        batch = [row for row in batch if row.get("event_id") and row.get("content")]
+        batch = [row for row in batch if row.event_id and row.content]
         if not batch:
             logger.info("empty valid cls telegraph batch")
             return []
@@ -397,120 +796,200 @@ class Application:
         seen_event_ids = set()
 
         for row in batch:
-            event_id = row["event_id"]
+            event_id = row.event_id
             if event_id in seen_event_ids:
                 continue
             seen_event_ids.add(event_id)
 
-            row_ts = row.get("publish_ts") or 0
+            row_ts = row.publish_ts or 0
+
+            # 保留“同秒数据”，只过滤更早的数据
+            # 同秒重复由后面的 event_id 去重兜底
             if latest_ts is not None and row_ts < latest_ts:
                 continue
 
             rows.append(row)
 
-        rows.sort(key=lambda x: x.get("publish_ts") or 0)
+        rows.sort(key=lambda x: x.publish_ts or 0)
+        return rows
+
+    async def fetch_new_jin10_telegraphs(
+        self,
+        latest_ts: int | None,
+        limit: int = 20,
+        detail_limit: int = 10,
+        sleep_seconds: float = 0.2,
+    ) -> list[CLSTelegraph]:
+        """
+        抓取最新一批 Jin10 电报候选数据。
+
+        规则与 CLS 基本一致：
+        1. 只保留 event_id 和 content 都存在的有效数据
+        2. 按 event_id 去重
+        3. latest_ts 按 Jin10 自己的 source 游标过滤
+        4. 最终按 publish_ts 升序返回
+        """
+        batch = await asyncio.to_thread(
+            fetch_latest_jin10_telegraphs,
+            limit,
+            detail_limit,
+            sleep_seconds,
+        )
+
+        if not batch:
+            logger.info("no jin10 telegraphs fetched")
+            return []
+
+        batch = [row for row in batch if row.event_id and row.content]
+        if not batch:
+            logger.info("empty valid jin10 telegraph batch")
+            return []
+
+        rows = []
+        seen_event_ids = set()
+
+        for row in batch:
+            event_id = row.event_id
+            if event_id in seen_event_ids:
+                continue
+            seen_event_ids.add(event_id)
+
+            row_ts = row.publish_ts or 0
+
+            # 同样只过滤更早的数据，同秒重复交给 event_id 去重
+            if latest_ts is not None and row_ts < latest_ts:
+                continue
+
+            rows.append(row)
+
+        rows.sort(key=lambda x: x.publish_ts or 0)
+        return rows
+
+    async def fetch_new_market_telegraphs(self) -> list[CLSTelegraph]:
+        """
+        统一抓取市场资讯（CLS + Jin10）。
+
+        核心逻辑：
+        1. CLS 按 source="cls" 取自己的最新时间
+        2. Jin10 按 source="jin10" 取自己的最新时间
+        3. 分别抓取各自增量
+        4. 合并成一个统一待处理列表
+        5. 按时间升序返回，供后续统一分析
+
+        这样做的好处：
+        - 后面的 LLM、入库、衍生视图逻辑都不需要拆成两套
+        """
+        if self.cls_telegraph_repository is None:
+            logger.warning("cls_telegraph_repository is not initialized")
+            return []
+
+        cls_latest_ts = await self.cls_telegraph_repository.get_latest_publish_ts_by_source("cls")
+        jin10_latest_ts = await self.cls_telegraph_repository.get_latest_publish_ts_by_source("jin10")
+
+        cls_rows = await self.fetch_new_cls_telegraphs(
+            latest_ts=cls_latest_ts,
+            rn=20,
+        )
+
+        jin10_rows = await self.fetch_new_jin10_telegraphs(
+            latest_ts=jin10_latest_ts,
+            limit=20,
+            detail_limit=10,
+            sleep_seconds=0.2,
+        )
+
+        rows = cls_rows + jin10_rows
+        rows.sort(key=lambda x: x.publish_ts or 0)
         return rows
 
     async def sync_cls_telegraphs_once(self, send_insert_card: bool = True):
         """
-        执行一轮财联社电报同步。
+        执行一轮市场资讯同步。
+
+        注意：
+        - 为了尽量少改现有主流程，这里保留原方法名 sync_cls_telegraphs_once
+        - 但当前实际同步来源已经扩展为：CLS + Jin10
 
         完整流程：
-        1. 获取库中当前最大 publish_ts
-        2. 抓取最近一批候选电报
-        3. 过滤掉已存在 event_id，避免重复分析
-        4. 对真正新增的数据做 LLM 分析
-        5. 写入 cls_telegraphs
-        6. 若是本次新插入且允许发卡，则发送飞书入库卡片
-        7. 本轮结束后刷新所有版块衍生视图
+        1. 分别按 source 获取 CLS / Jin10 各自最新 publish_ts
+        2. 分别抓取 CLS / Jin10 候选数据
+        3. 合并为统一待分析列表
+        4. 先按 event_id 过滤一次，避免同 id 重复
+        5. 再做批次内跨平台内容去重
+        6. 去重后的 rows 不再串行执行 LLM，而是统一加入队列
+        7. 由 5 个 worker 并发完成：LLM -> upsert -> 发卡
+        8. 版块衍生视图由后台刷新任务统一节流刷新
 
         参数：
         - send_insert_card:
-          True  -> 新插入电报发送飞书卡
+          True  -> 新插入资讯发送飞书卡
           False -> 常用于 startup 首次灌库，避免一次性刷屏
-
-        注意：
-        - 无论本次是否有新增电报，都会在结束时刷新衍生视图
-        - 这样即使没有新消息，72 小时滚动窗口右移后，版块汇总与投资倾向排行也能保持最新
         """
         if self.cls_telegraph_repository is None:
             logger.warning("cls_telegraph_repository is not initialized")
-            await self._refresh_sector_views()
             return
 
-        latest_ts = await self.cls_telegraph_repository.get_latest_publish_ts()
-        rows = await self.fetch_new_cls_telegraphs(
-            latest_ts=latest_ts,
-            rn=20,
+        rows = await self.fetch_new_market_telegraphs()
+
+        if not rows:
+            logger.info("no candidate market telegraphs after fetch")
+            return
+
+        # 第一步：按 event_id 过滤一次，避免同 id 重复进入队列
+        event_ids = [row.event_id for row in rows if row.event_id]
+        existing_event_ids = await self.cls_telegraph_repository.get_existing_event_ids(event_ids)
+        rows = [row for row in rows if row.event_id not in existing_event_ids]
+
+        if not rows:
+            logger.info("no new market telegraphs after event_id dedup")
+            return
+
+        # 第二步：批次内跨平台去重
+        rows = self._dedup_rows_in_batch(rows)
+
+        if not rows:
+            logger.info("no new market telegraphs after batch cross-source dedup")
+            return
+
+        # 升序处理，保证入队和日志顺序更接近真实发布时间顺序
+        rows.sort(key=lambda x: x.publish_ts or 0)
+
+        cls_count = sum(1 for row in rows if row.source == "cls")
+        jin10_count = sum(1 for row in rows if row.source == "jin10")
+
+        enqueued_count = await self._enqueue_market_telegraphs(
+            rows=rows,
+            send_insert_card=send_insert_card,
         )
 
-        if not rows:
-            logger.info("no candidate cls telegraphs after paging fetch")
-            await self._refresh_sector_views()
+        if enqueued_count <= 0:
+            logger.info(
+                "no market telegraphs enqueued after pending-event dedup, cls_count=%s, jin10_count=%s, queue_size=%s",
+                cls_count,
+                jin10_count,
+                self.market_telegraph_queue.qsize(),
+            )
             return
 
-        # 再按 event_id 过滤一次：
-        # 这样可以避免“同秒旧消息”因为 publish_ts 未回退而重复做 LLM 分析
-        event_ids = [row["event_id"] for row in rows if row.get("event_id")]
-        existing_event_ids = await self.cls_telegraph_repository.get_existing_event_ids(event_ids)
-        rows = [row for row in rows if row.get("event_id") not in existing_event_ids]
-
-        if not rows:
-            logger.info("no new cls telegraphs to analyze and upsert")
-            await self._refresh_sector_views()
-            return
-
-        # 升序处理，保证写库和日志顺序更接近真实发布时间顺序
-        rows.sort(key=lambda x: x.get("publish_ts") or 0)
-
-        llm_success_count = 0
-        llm_failed_count = 0
-        insert_card_success_count = 0
-        insert_card_failed_count = 0
-
-        for row in rows:
-            # 单条电报先跑 LLM，结果回填到 row["llm_analysis"]
-            llm_analysis, llm_ok = await self.analyze_single_cls_telegraph(row)
-            row["llm_analysis"] = llm_analysis
-
-            # 再执行 upsert，确保 event_id 唯一
-            update_result = await self.cls_telegraph_repository.upsert_one(row)
-
-            # 只有 upserted_id 存在时，说明是“本次新插入”
-            is_new_insert = bool(getattr(update_result, "upserted_id", None))
-
-            if llm_ok:
-                llm_success_count += 1
-            else:
-                llm_failed_count += 1
-
-            # 只对“本次真正新入库成功”的数据发卡，避免更新老数据时重复发消息
-            if is_new_insert and send_insert_card:
-                card_ok = await self.send_cls_telegraph_insert_card(row)
-                if card_ok:
-                    insert_card_success_count += 1
-                else:
-                    insert_card_failed_count += 1
-
-        max_ts = max((row.get("publish_ts") or 0) for row in rows)
+        max_ts = max((row.publish_ts or 0) for row in rows)
         logger.info(
-            "cls telegraphs synced successfully, upsert_count=%s, llm_success=%s, llm_failed=%s, "
-            "insert_card_success=%s, insert_card_failed=%s, latest_publish_ts=%s, send_insert_card=%s",
-            len(rows),
-            llm_success_count,
-            llm_failed_count,
-            insert_card_success_count,
-            insert_card_failed_count,
+            "market telegraphs enqueued successfully, enqueue_count=%s, cls_count=%s, jin10_count=%s, "
+            "latest_publish_ts=%s, send_insert_card=%s, queue_size=%s",
+            enqueued_count,
+            cls_count,
+            jin10_count,
             max_ts,
             send_insert_card,
+            self.market_telegraph_queue.qsize(),
         )
-
-        # 同步结束后统一刷新衍生视图
-        await self._refresh_sector_views()
 
     async def cls_telegraph_polling_loop(self):
         """
-        财联社电报轮询主循环。
+        市场资讯轮询主循环。
+
+        注意：
+        - 为尽量少改动旧代码，方法名仍然保留 cls_telegraph_polling_loop
+        - 当前轮询实际已经覆盖 CLS + Jin10 两个来源
 
         行为：
         - 应用启动后常驻运行
@@ -523,35 +1002,104 @@ class Application:
                 await asyncio.sleep(300)
                 await self.sync_cls_telegraphs_once(send_insert_card=True)
             except asyncio.CancelledError:
-                logger.info("cls telegraph polling loop cancelled")
+                logger.info("market telegraph polling loop cancelled")
                 raise
             except Exception as e:
-                logger.exception("cls telegraph polling loop failed: %s", e)
+                logger.exception("market telegraph polling loop failed: %s", e)
 
-    async def send_cls_telegraph_insert_card(self, row: dict) -> bool:
+    @staticmethod
+    def _extract_ranking_rows(ranking_data):
+        if not ranking_data:
+            return []
+
+        if isinstance(ranking_data, list):
+            return ranking_data
+
+        if isinstance(ranking_data, dict):
+            for key in ("sector_rankings", "rankings", "rows", "items", "data", "list"):
+                value = ranking_data.get(key)
+                if isinstance(value, list):
+                    return value
+
+        return []
+    
+    async def _load_card_top5_rankings(self) -> tuple[list, list]:
         """
-        针对单条“新插入成功”的财联社电报发送飞书卡片。
-
-        返回：
-        - True: 发送成功
-        - False: 发送失败
-
-        说明：
-        - 失败不影响主流程
-        - 这里只负责构建并发送“电报入库通知卡片”
+        加载卡片展示用的两个榜单 Top5。
+        这里按当前业务交易日对应的 analysis_date 去取。
         """
+        investment_top5 = []
+        heat_top5 = []
+
         try:
-            card = self.card_builder.build_cls_telegraph_insert_card(row)
+            ## 目前直接用当前日期的分析结果，后续如果需要更精确的“资讯发布时间对应的分析结果”，可以改成根据资讯 publish_ts 去找对应的 analysis_date
+            # today_trade_date, _ = self.get_a_share_trade_dates()
+            # analysis_date = self._format_trade_date(today_trade_date)
+            analysis_date = datetime.now(CN_TZ).date().isoformat()
+        except Exception as e:
+            logger.exception("resolve card analysis_date failed: %s", e)
+            return investment_top5, heat_top5
+
+        if self.sector_investment_preference_ranking_repository is not None:
+            try:
+                ranking_data = await self.sector_investment_preference_ranking_repository.get_investment_preference_ranking(
+                    analysis_date,
+                    limit=5,
+                )
+                investment_top5 = self._extract_ranking_rows(ranking_data)[:5]
+            except Exception as e:
+                logger.exception(
+                    "load investment preference top5 failed, analysis_date=%s, err=%s",
+                    analysis_date,
+                    e,
+                )
+        else:
+            logger.warning("sector_investment_preference_ranking_repository is not initialized")
+
+        if self.sector_market_heat_ranking_repository is not None:
+            try:
+                ranking_data = await self.sector_market_heat_ranking_repository.get_market_heat_ranking(
+                    analysis_date,
+                    limit=5,
+                )
+                heat_top5 = self._extract_ranking_rows(ranking_data)[:5]
+            except Exception as e:
+                logger.exception(
+                    "load market heat top5 failed, analysis_date=%s, err=%s",
+                    analysis_date,
+                    e,
+                )
+        else:
+            logger.warning("sector_market_heat_ranking_repository is not initialized")
+
+        return investment_top5, heat_top5
+
+
+    async def send_cls_telegraph_insert_card(self, row: CLSTelegraph) -> bool:
+        try:
+            investment_top5, heat_top5 = await self._load_card_top5_rankings()
+
+            card = self.card_builder.build_cls_telegraph_insert_card(
+                row=row,
+                investment_top5=investment_top5,
+                heat_top5=heat_top5,
+            )
+
             await self.notifier.send_card(card)
+
             logger.info(
-                "cls telegraph insert card sent successfully, event_id=%s",
-                row.get("event_id"),
+                "telegraph insert card sent successfully, source=%s, event_id=%s, investment_top5_count=%s, heat_top5_count=%s",
+                row.source,
+                row.event_id,
+                len(investment_top5),
+                len(heat_top5),
             )
             return True
         except Exception as e:
             logger.exception(
-                "send cls telegraph insert card failed, event_id=%s, error=%s",
-                row.get("event_id"),
+                "send telegraph insert card failed, source=%s, event_id=%s, error=%s",
+                row.source,
+                row.event_id,
                 e,
             )
             return False
@@ -565,11 +1113,10 @@ class Application:
         2. 建立 Mongo 连接
         3. 初始化各 repository 并建索引
         4. 启动每日调度器
-        5. 启动时先同步一次财联社电报（首次不发入库卡，防止刷屏）
-        6. 创建财联社轮询后台任务
-
-        说明：
-        - 各步骤尽量做到失败可日志化，不轻易影响整个应用启动
+        5. 启动 5 个市场资讯 worker
+        6. 启动版块衍生视图后台刷新任务
+        7. 启动时先同步一次市场资讯（首次不发入库卡，防止刷屏）
+        8. 创建常驻轮询后台任务
         """
         await self.notifier.startup()
 
@@ -577,7 +1124,7 @@ class Application:
         self.mongo_client = AsyncIOMotorClient(settings.mongo_uri)
         self.db = self.mongo_client[settings.mongo_db_name]
 
-        # 初始化财联社原始数据 repository
+        # 初始化统一资讯原始表 repository
         self.cls_telegraph_repository = CLSTelegraphRepository(self.db)
         await self.cls_telegraph_repository.create_indexes()
 
@@ -612,13 +1159,24 @@ class Application:
         except Exception as e:
             logger.exception("start daily scheduler failed: %s", e)
 
-        # 启动时先同步一次财联社数据，但首次灌库不发入库卡，避免群里刷屏
+        # 启动市场资讯 worker 池
+        self.market_telegraph_worker_tasks = [
+            asyncio.create_task(self._market_telegraph_worker(i + 1))
+            for i in range(self.market_telegraph_worker_count)
+        ]
+
+        # 启动版块衍生视图后台刷新任务
+        self.sector_views_refresh_task = asyncio.create_task(
+            self._sector_views_refresh_loop()
+        )
+
+        # 启动时先同步一次市场资讯，但首次灌库不发入库卡，避免群里刷屏
         try:
             await self.sync_cls_telegraphs_once(send_insert_card=False)
         except Exception as e:
-            logger.exception("initial cls telegraph sync failed: %s", e)
+            logger.exception("initial market telegraph sync failed: %s", e)
 
-        # 创建常驻轮询任务：之后每 5 分钟自动拉取一次财联社电报
+        # 创建常驻轮询任务：之后每 5 分钟自动拉取一次市场资讯
         self.cls_telegraph_polling_task = asyncio.create_task(
             self.cls_telegraph_polling_loop()
         )
@@ -628,19 +1186,34 @@ class Application:
         应用关闭流程。
 
         顺序：
-        1. 取消财联社轮询任务
-        2. 停止每日调度器
-        3. 关闭 Mongo 连接
-        4. 关闭飞书 notifier
-
-        说明：
-        - 尽量保证资源按相反顺序被正确释放
+        1. 取消轮询任务
+        2. 取消版块衍生视图刷新任务
+        3. 取消 worker 池
+        4. 停止每日调度器
+        5. 关闭 Mongo 连接
+        6. 关闭飞书 notifier
         """
         if self.cls_telegraph_polling_task is not None:
             self.cls_telegraph_polling_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.cls_telegraph_polling_task
             self.cls_telegraph_polling_task = None
+
+        if self.sector_views_refresh_task is not None:
+            self.sector_views_refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.sector_views_refresh_task
+            self.sector_views_refresh_task = None
+
+        if self.market_telegraph_worker_tasks:
+            for task in self.market_telegraph_worker_tasks:
+                task.cancel()
+
+            for task in self.market_telegraph_worker_tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+            self.market_telegraph_worker_tasks = []
 
         try:
             await self._stop_scheduler()

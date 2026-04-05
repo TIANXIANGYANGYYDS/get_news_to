@@ -1,13 +1,62 @@
 nohup: ignoring input
-[2026-04-05 00:16:52] [INFO] [feishu.notifier] feishu session started
-[2026-04-05 00:16:52] [WARNING] [bootstrap] daily scheduler has no startup()/start() method, skip starting
-[2026-04-05 00:16:52] [INFO] [bootstrap] no new cls telegraphs to analyze and upsert
-[2026-04-05 00:16:52] [INFO] [bootstrap] sector 3d daily summary updated, biz_date=2026-04-05, sector_count=507, total_news_count=1965, total_score_sum=40443
-[2026-04-05 00:16:52] [INFO] [bootstrap] sector investment preference ranking updated, biz_date=2026-04-05, sector_count=507, total_news_count=940
-[2026-04-05 00:16:52] [INFO] [bootstrap] sector market heat ranking updated, biz_date=2026-04-05, sector_count=507, total_news_count=940
-[2026-04-05 00:16:52] [INFO] [main] run startup market analysis task once
-[2026-04-05 00:16:52] [INFO] [bootstrap] start fetching morning market data
-[2026-04-05 00:16:53] [INFO] [bootstrap] morning data fetched successfully, date=2026-04-03, raw_content_len=4360
-[2026-04-05 00:16:53] [INFO] [bootstrap] start fetching previous day review
-[2026-04-05 00:16:53] [INFO] [bootstrap] previous day review fetched successfully, review_len=3480
-[2026-04-05 00:16:53] [INFO] [bootstrap] start llm analysis for morning market data
+INFO:     Started server process [3346445]
+INFO:     Waiting for application startup.
+[2026-04-06 04:19:27] [INFO] [feishu.notifier] feishu session started
+[2026-04-06 04:19:27] [INFO] [bootstrap] daily scheduler started by startup()
+[2026-04-06 04:19:27] [INFO] [scheduler.daily] next run at 2026-04-06 09:00:00 CST, waiting 16832 seconds
+[2026-04-06 04:19:30] [INFO] [bootstrap] market telegraphs enqueued successfully, enqueue_count=1, cls_count=0, jin10_count=1, latest_publish_ts=1775420071, send_insert_card=False, queue_size=1
+[2026-04-06 04:19:30] [INFO] [main] run startup market analysis task once
+[2026-04-06 04:19:30] [INFO] [bootstrap] start fetching morning market data
+[2026-04-06 04:19:31] [INFO] [bootstrap] morning data fetched successfully, date=2026-04-03, raw_content_len=4360
+[2026-04-06 04:19:31] [INFO] [bootstrap] start fetching previous day review
+[2026-04-06 04:19:31] [INFO] [bootstrap] previous day review fetched successfully, review_len=3480
+[2026-04-06 04:19:31] [INFO] [bootstrap] start llm analysis for morning market data
+[2026-04-06 04:20:00] [INFO] [bootstrap] telegraph llm analyzed successfully, source=jin10, event_id=86d6537917d420ad66f5ec6aba934f51, score=15
+[2026-04-06 04:20:00] [INFO] [bootstrap] market telegraph processed by worker, worker=1, source=jin10, event_id=86d6537917d420ad66f5ec6aba934f51, llm_ok=True, is_new_insert=True, card_ok=None, queue_size=0
+[2026-04-06 04:20:05] [INFO] [bootstrap] sector 3d daily summary updated, biz_date=2026-04-06, sector_count=78, total_news_count=992, total_score_sum=35853
+[2026-04-06 04:20:05] [INFO] [bootstrap] sector investment preference ranking updated, biz_date=2026-04-06, sector_count=78, total_news_count=659
+[2026-04-06 04:20:05] [INFO] [bootstrap] sector market heat ranking updated, biz_date=2026-04-06, sector_count=78, total_news_count=659
+[2026-04-06 04:20:37] [INFO] [bootstrap] llm analysis finished, analysis_len=1225
+[2026-04-06 04:20:37] [INFO] [bootstrap] daily market analysis saved successfully, analysis_date=2026-04-03, action=update
+[2026-04-06 04:20:37] [INFO] [feishu.notifier] feishu tenant_access_token refreshed
+[2026-04-06 04:20:37] [INFO] [feishu.notifier] sending feishu interactive card
+[2026-04-06 04:20:38] [INFO] [feishu.notifier] feishu card sent successfully
+[2026-04-06 04:20:38] [INFO] [bootstrap] daily market analysis card sent
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8092 (Press CTRL+C to quit)
+[2026-04-06 04:24:34] [INFO] [bootstrap] market telegraphs enqueued successfully, enqueue_count=1, cls_count=0, jin10_count=1, latest_publish_ts=1775420624, send_insert_card=True, queue_size=1
+[2026-04-06 04:26:06] [INFO] [bootstrap] telegraph llm analyzed successfully, source=jin10, event_id=2279b3b5885c6b6223a95fed30d30e89, score=25
+[2026-04-06 04:26:06] [INFO] [feishu.notifier] sending feishu interactive card
+[2026-04-06 04:26:07] [INFO] [feishu.notifier] feishu card sent successfully
+[2026-04-06 04:26:07] [INFO] [bootstrap] telegraph insert card sent successfully, source=jin10, event_id=2279b3b5885c6b6223a95fed30d30e89, investment_top5_count=5, heat_top5_count=5
+[2026-04-06 04:26:07] [INFO] [bootstrap] market telegraph processed by worker, worker=2, source=jin10, event_id=2279b3b5885c6b6223a95fed30d30e89, llm_ok=True, is_new_insert=True, card_ok=True, queue_size=0
+[2026-04-06 04:26:12] [INFO] [bootstrap] sector 3d daily summary updated, biz_date=2026-04-06, sector_count=78, total_news_count=991, total_score_sum=36038
+[2026-04-06 04:26:12] [INFO] [bootstrap] sector investment preference ranking updated, biz_date=2026-04-06, sector_count=78, total_news_count=659
+[2026-04-06 04:26:12] [INFO] [bootstrap] sector market heat ranking updated, biz_date=2026-04-06, sector_count=78, total_news_count=659
+[2026-04-06 04:29:37] [INFO] [bootstrap] market telegraphs enqueued successfully, enqueue_count=4, cls_count=2, jin10_count=2, latest_publish_ts=1775420944, send_insert_card=True, queue_size=4
+[2026-04-06 04:30:00] [INFO] [bootstrap] telegraph llm analyzed successfully, source=jin10, event_id=49c9d2be766c142c656d734bd5d6d6f5, score=25
+[2026-04-06 04:30:00] [INFO] [feishu.notifier] sending feishu interactive card
+[2026-04-06 04:30:00] [INFO] [feishu.notifier] feishu card sent successfully
+[2026-04-06 04:30:00] [INFO] [bootstrap] telegraph insert card sent successfully, source=jin10, event_id=49c9d2be766c142c656d734bd5d6d6f5, investment_top5_count=5, heat_top5_count=5
+[2026-04-06 04:30:00] [INFO] [bootstrap] market telegraph processed by worker, worker=1, source=jin10, event_id=49c9d2be766c142c656d734bd5d6d6f5, llm_ok=True, is_new_insert=True, card_ok=True, queue_size=0
+[2026-04-06 04:30:01] [INFO] [bootstrap] telegraph llm analyzed successfully, source=jin10, event_id=aae43b22d79764947e399a4cb9ef5dce, score=0
+[2026-04-06 04:30:01] [INFO] [feishu.notifier] sending feishu interactive card
+[2026-04-06 04:30:02] [INFO] [feishu.notifier] feishu card sent successfully
+[2026-04-06 04:30:02] [INFO] [bootstrap] telegraph insert card sent successfully, source=jin10, event_id=aae43b22d79764947e399a4cb9ef5dce, investment_top5_count=5, heat_top5_count=5
+[2026-04-06 04:30:02] [INFO] [bootstrap] market telegraph processed by worker, worker=5, source=jin10, event_id=aae43b22d79764947e399a4cb9ef5dce, llm_ok=True, is_new_insert=True, card_ok=True, queue_size=0
+[2026-04-06 04:30:05] [INFO] [bootstrap] sector 3d daily summary updated, biz_date=2026-04-06, sector_count=78, total_news_count=992, total_score_sum=36063
+[2026-04-06 04:30:05] [INFO] [bootstrap] sector investment preference ranking updated, biz_date=2026-04-06, sector_count=78, total_news_count=660
+[2026-04-06 04:30:05] [INFO] [bootstrap] sector market heat ranking updated, biz_date=2026-04-06, sector_count=78, total_news_count=660
+[2026-04-06 04:30:20] [INFO] [bootstrap] telegraph llm analyzed successfully, source=cls, event_id=2335603, score=50
+[2026-04-06 04:30:20] [INFO] [feishu.notifier] sending feishu interactive card
+[2026-04-06 04:30:20] [INFO] [feishu.notifier] feishu card sent successfully
+[2026-04-06 04:30:20] [INFO] [bootstrap] telegraph insert card sent successfully, source=cls, event_id=2335603, investment_top5_count=5, heat_top5_count=5
+[2026-04-06 04:30:20] [INFO] [bootstrap] market telegraph processed by worker, worker=3, source=cls, event_id=2335603, llm_ok=True, is_new_insert=True, card_ok=True, queue_size=0
+[2026-04-06 04:30:21] [INFO] [bootstrap] telegraph llm analyzed successfully, source=cls, event_id=2335604, score=-5
+[2026-04-06 04:30:21] [INFO] [feishu.notifier] sending feishu interactive card
+[2026-04-06 04:30:21] [INFO] [feishu.notifier] feishu card sent successfully
+[2026-04-06 04:30:21] [INFO] [bootstrap] telegraph insert card sent successfully, source=cls, event_id=2335604, investment_top5_count=5, heat_top5_count=5
+[2026-04-06 04:30:21] [INFO] [bootstrap] market telegraph processed by worker, worker=4, source=cls, event_id=2335604, llm_ok=True, is_new_insert=True, card_ok=True, queue_size=0
+[2026-04-06 04:30:25] [INFO] [bootstrap] sector 3d daily summary updated, biz_date=2026-04-06, sector_count=78, total_news_count=995, total_score_sum=36103
+[2026-04-06 04:30:25] [INFO] [bootstrap] sector investment preference ranking updated, biz_date=2026-04-06, sector_count=78, total_news_count=662
+[2026-04-06 04:30:25] [INFO] [bootstrap] sector market heat ranking updated, biz_date=2026-04-06, sector_count=78, total_news_count=662

@@ -1,18 +1,19 @@
 import ast
 import json
 import re
-from typing import Optional, List
+from typing import Optional, List, Any
 
 from openai import OpenAI
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
+from app.model import CLSTelegraphLLMAnalysis
 from app.config import settings
 
 
 SECTOR_WHITELIST = [
     "半导体", "白酒", "白色家电", "保险", "包装印刷", "厨卫电器", "电池", "电机", "电力", "电网设备", "多元金融", "电子化学品",
     "房地产", "风电设备", "非金属材料", "服装家纺", "纺织制造", "工程机械", "光伏设备", "贵金属", "轨交设备", "港口航运", "公路铁路运输", "钢铁", "光学光电子", "工业金属",
-    "环保设备", "环境治理", "互联网电商", "黑色家电", "化学纤维", "化学原料", "化学制品", "化学制药", "化学制品", "化学制药", "IT服务", "机场航运", "军工电子", "军工装备", "家居用品", "计算机设备",
+    "环保设备", "环境治理", "互联网电商", "黑色家电", "化学纤维", "化学原料", "化学制品", "化学制药", "IT服务", "机场航运", "军工电子", "军工装备", "家居用品", "计算机设备",
     "金属新材料", "教育", "建筑材料", "建筑装饰",
     "零售", "旅游及酒店", "美容护理", "煤炭开采加工", "贸易", "农产品加工", "农化制品", "能源金属",
     "汽车服务及其他", "汽车零部件", "汽车整车", "其他电源设备", "其他电子", "其他社会服务", "软件开发", "燃气", "塑料制品", "食品加工制造", "生物制品", "石油加工贸易",
@@ -129,7 +130,7 @@ def _get_setting(*names, required: bool = False, default=None):
     return default
 
 
-def _build_client():
+def _build_client() -> OpenAI:
     """
     与 analyze_morning_data 保持一致：
     - 只要 settings.api_key 有值就能跑
@@ -147,35 +148,6 @@ def _build_client():
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         timeout=90.0,
     )
-
-
-class CLSTelegraphLLMAnalysis(BaseModel):
-    score: int = Field(..., ge=-100, le=100, description="利好利空分数，范围 -100~100")
-    reason: str = Field(..., min_length=1, description="分析理由")
-    companies: Optional[List[str]] = Field(default=None, description="涉及公司，没有则为None")
-    sectors: Optional[List[str]] = Field(default=None, description="涉及板块，没有则为None")
-
-    def to_mongo_dict(self) -> dict:
-        def clean_list(items: Optional[List[str]]) -> Optional[List[str]]:
-            if not items:
-                return None
-
-            result = []
-            seen = set()
-            for item in items:
-                item = (item or "").strip()
-                if item and item not in seen:
-                    seen.add(item)
-                    result.append(item)
-
-            return result or None
-
-        return {
-            "score": int(self.score),
-            "reason": self.reason.strip(),
-            "companies": clean_list(self.companies),
-            "sectors": clean_list(self.sectors),
-        }
 
 
 SYSTEM_PROMPT = f"""
@@ -360,7 +332,7 @@ REPAIR_PROMPT = f"""
 
 
 def _dedupe_keep_order(items: List[str]) -> List[str]:
-    result = []
+    result: List[str] = []
     seen = set()
     for item in items:
         if item not in seen:
@@ -369,11 +341,11 @@ def _dedupe_keep_order(items: List[str]) -> List[str]:
     return result
 
 
-def _clean_text(value) -> str:
+def _clean_text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _coerce_int(value, default: int = 0) -> int:
+def _coerce_int(value: Any, default: int = 0) -> int:
     if isinstance(value, bool):
         return default
     if isinstance(value, int):
@@ -391,7 +363,7 @@ def _coerce_int(value, default: int = 0) -> int:
     return default
 
 
-def _coerce_optional_list(value) -> Optional[List[str]]:
+def _coerce_optional_list(value: Any) -> Optional[List[str]]:
     if value is None:
         return None
 
@@ -404,30 +376,29 @@ def _coerce_optional_list(value) -> Optional[List[str]]:
     if not text or text.lower() == "null":
         return None
 
-    # 尽量兼容 "A、B、C" / "A,B,C"
     parts = re.split(r"[、，,;/；\n]+", text)
     parts = [_clean_text(p) for p in parts]
     parts = [p for p in parts if p]
     return parts or None
 
 
-def _coerce_payload_shape(payload: dict) -> dict:
+def _coerce_payload_shape(payload: dict) -> CLSTelegraphLLMAnalysis:
     if not isinstance(payload, dict):
         raise ValueError(f"LLM payload is not a dict: {type(payload)}")
 
-    return {
-        "score": _coerce_int(payload.get("score"), default=0),
-        "reason": _clean_text(payload.get("reason")) or "未返回有效分析理由。",
-        "companies": _coerce_optional_list(payload.get("companies")),
-        "sectors": _coerce_optional_list(payload.get("sectors")),
-    }
+    return CLSTelegraphLLMAnalysis(
+        score=_coerce_int(payload.get("score"), default=0),
+        reason=_clean_text(payload.get("reason")) or "未返回有效分析理由。",
+        companies=_coerce_optional_list(payload.get("companies")),
+        sectors=_coerce_optional_list(payload.get("sectors")),
+    )
 
 
 def _normalize_company_list(items: Optional[List[str]]) -> Optional[List[str]]:
     if not items:
         return None
 
-    result = []
+    result: List[str] = []
     for item in items:
         item = _clean_text(item)
         if item:
@@ -449,7 +420,7 @@ def _normalize_sector_name(name: str) -> Optional[str]:
         if sector in raw:
             return sector
 
-    compact = re.sub(r"[\s、，,/；;（）()\-_—]+", "", raw)
+    compact = re.sub(r"[\s、，,/；;（）()\\-_—]+", "", raw)
     if compact in SECTOR_SET:
         return compact
 
@@ -464,7 +435,7 @@ def _normalize_sector_name(name: str) -> Optional[str]:
 
 
 def _infer_sectors_from_text(content: str) -> List[str]:
-    result = []
+    result: List[str] = []
     for pattern, sector in CONTENT_SECTOR_RULES:
         if re.search(pattern, content, flags=re.I):
             result.append(sector)
@@ -477,7 +448,7 @@ def _normalize_sector_list(
     content: str = "",
     subjects: Optional[List[str]] = None,
 ) -> Optional[List[str]]:
-    result = []
+    result: List[str] = []
 
     if items:
         for item in items:
@@ -520,7 +491,6 @@ def _parse_json_payload(json_text: str) -> dict:
     try:
         payload = json.loads(json_text)
     except json.JSONDecodeError:
-        # 兼容模型偶发输出 Python 风格字面量：None / True / False
         payload = ast.literal_eval(json_text)
 
     if not isinstance(payload, dict):
@@ -529,7 +499,7 @@ def _parse_json_payload(json_text: str) -> dict:
     return payload
 
 
-def _call_llm_json(client: OpenAI, messages: list, temperature: float = 0.2) -> dict:
+def _call_llm_json(client: OpenAI, messages: list, temperature: float = 0.2) -> CLSTelegraphLLMAnalysis:
     request_kwargs = {
         "model": "qwen-plus",
         "messages": messages,
@@ -545,7 +515,7 @@ def _call_llm_json(client: OpenAI, messages: list, temperature: float = 0.2) -> 
     except Exception:
         resp = client.chat.completions.create(**request_kwargs)
 
-    text = resp.choices[0].message.content
+    text = resp.choices[0].message.content or ""
     json_text = _extract_json_text(text)
     payload = _parse_json_payload(json_text)
     return _coerce_payload_shape(payload)
@@ -581,7 +551,6 @@ def _is_strong_event(content: str) -> bool:
         if _has_official_source(text) or _has_numeric_detail(text):
             return True
 
-    # 少数典型高交易性关键词，单独放宽
     hard_patterns = [
         r"收储", r"中标", r"量产", r"获批", r"回购", r"增持", r"提价", r"涨价",
         r"降息", r"降准", r"停产", r"处罚", r"立案", r"制裁", r"订单", r"断供",
@@ -591,55 +560,50 @@ def _is_strong_event(content: str) -> bool:
 
 def _needs_repair(
     content: str,
-    raw_payload: dict,
-    normalized_payload: dict,
+    raw_payload: CLSTelegraphLLMAnalysis,
+    normalized_payload: CLSTelegraphLLMAnalysis,
 ) -> bool:
-    raw_sectors = raw_payload.get("sectors") or []
-    normalized_sectors = normalized_payload.get("sectors") or []
-    raw_score = _coerce_int(raw_payload.get("score"), 0)
+    raw_sectors = raw_payload.sectors or []
+    normalized_sectors = normalized_payload.sectors or []
+    raw_score = _coerce_int(raw_payload.score, 0)
 
-    # 原始结果给了板块，但映射后全失效，说明板块不规范
     if raw_sectors and not normalized_sectors:
         return True
 
-    # 能映射板块但给 0，触发纠偏
     if normalized_sectors and raw_score == 0:
         return True
 
-    # 明显强事件但分数过于保守，触发纠偏
     if normalized_sectors and _is_strong_event(content) and abs(raw_score) < 45:
         return True
 
     return False
 
-
 def _post_process_payload(
-    payload: dict,
+    payload: CLSTelegraphLLMAnalysis,
     *,
     content: str,
     subjects: Optional[List[str]] = None,
-) -> dict:
-    score = max(-100, min(100, _coerce_int(payload.get("score"), 0)))
-    reason = _clean_text(payload.get("reason")) or "未返回有效分析理由。"
-    companies = _normalize_company_list(_coerce_optional_list(payload.get("companies")))
+) -> CLSTelegraphLLMAnalysis:
+    score = max(-100, min(100, _coerce_int(payload.score, 0)))
+    reason = _clean_text(payload.reason) or "未返回有效分析理由。"
+    companies = _normalize_company_list(_coerce_optional_list(payload.companies))
     sectors = _normalize_sector_list(
-        _coerce_optional_list(payload.get("sectors")),
+        _coerce_optional_list(payload.sectors),
         content=content,
         subjects=subjects or [],
     )
 
-    # 兜底：只要能明确映射板块且方向清晰，不允许最后还是 0
     if score == 0 and sectors:
         direction = _infer_direction(content)
         if direction != 0:
             score = direction * (35 if _is_strong_event(content) else 15)
 
-    return {
-        "score": max(-100, min(100, int(score))),
-        "reason": reason,
-        "companies": companies,
-        "sectors": sectors,
-    }
+    return CLSTelegraphLLMAnalysis(
+        score=max(-100, min(100, int(score))),
+        reason=reason,
+        companies=companies,
+        sectors=sectors,
+    )
 
 
 def _repair_analysis(
@@ -647,16 +611,16 @@ def _repair_analysis(
     *,
     content: str,
     subjects: Optional[List[str]],
-    first_payload: dict,
-) -> dict:
+    first_payload: CLSTelegraphLLMAnalysis,
+) -> CLSTelegraphLLMAnalysis:
     user_content = (
         f"主题标签：{json.dumps(subjects or [], ensure_ascii=False)}\n"
         f"电报内容：{content}\n\n"
-        f"上一版结果：{json.dumps(first_payload, ensure_ascii=False)}\n\n"
+        f"上一版结果：{json.dumps(first_payload.model_dump(), ensure_ascii=False)}\n\n"
         "请按修正规则重新输出一个 JSON 结果。"
     )
 
-    repaired_payload = _call_llm_json(
+    return _call_llm_json(
         client=client,
         messages=[
             {"role": "system", "content": REPAIR_PROMPT},
@@ -664,20 +628,41 @@ def _repair_analysis(
         ],
         temperature=0.1,
     )
-    return repaired_payload
 
 
-def analyze_cls_telegraph(content: str, subjects: Optional[list[str]] = None) -> dict:
+def _normalize_analysis_for_output(analysis: CLSTelegraphLLMAnalysis) -> CLSTelegraphLLMAnalysis:
+    def clean_list(items: Optional[List[str]]) -> Optional[List[str]]:
+        if not items:
+            return None
+
+        result: List[str] = []
+        seen = set()
+        for item in items:
+            item = (item or "").strip()
+            if item and item not in seen:
+                seen.add(item)
+                result.append(item)
+
+        return result or None
+
+    return CLSTelegraphLLMAnalysis(
+        score=int(analysis.score),
+        reason=(analysis.reason or "").strip() or "未返回有效分析理由。",
+        companies=clean_list(analysis.companies),
+        sectors=clean_list(analysis.sectors),
+    )
+
+def analyze_cls_telegraph(content: str, subjects: Optional[list[str]] = None) -> CLSTelegraphLLMAnalysis:
     content = (content or "").strip()
     subjects = subjects or []
 
     if not content:
-        return {
-            "score": 0,
-            "reason": "电报内容为空，未执行有效分析。",
-            "companies": None,
-            "sectors": None,
-        }
+        return CLSTelegraphLLMAnalysis(
+            score=0,
+            reason="电报内容为空，未执行有效分析。",
+            companies=None,
+            sectors=None,
+        )
 
     client = _build_client()
 
@@ -686,8 +671,7 @@ def analyze_cls_telegraph(content: str, subjects: Optional[list[str]] = None) ->
         f"电报内容：{content}"
     )
 
-    # 第一轮
-    first_payload = _call_llm_json(
+    first_analysis = _call_llm_json(
         client=client,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -697,31 +681,29 @@ def analyze_cls_telegraph(content: str, subjects: Optional[list[str]] = None) ->
     )
 
     normalized_first = _post_process_payload(
-        first_payload,
+        first_analysis,
         content=content,
         subjects=subjects,
     )
 
-    final_payload = normalized_first
+    final_analysis = normalized_first
 
-    # 必要时二次纠偏
-    if _needs_repair(content, first_payload, normalized_first):
-        repaired_raw = _repair_analysis(
+    if _needs_repair(content, first_analysis, normalized_first):
+        repaired_analysis = _repair_analysis(
             client=client,
             content=content,
             subjects=subjects,
             first_payload=normalized_first,
         )
-        final_payload = _post_process_payload(
-            repaired_raw,
+        final_analysis = _post_process_payload(
+            repaired_analysis,
             content=content,
             subjects=subjects,
         )
 
-    # 最终再走一次 Pydantic 兜底校验
     try:
-        analysis = CLSTelegraphLLMAnalysis.model_validate(final_payload)
+        analysis = CLSTelegraphLLMAnalysis.model_validate(final_analysis)
     except ValidationError as e:
         raise ValueError(f"Invalid LLM analysis payload after post-process: {e}") from e
 
-    return analysis.to_mongo_dict()
+    return _normalize_analysis_for_output(analysis)
