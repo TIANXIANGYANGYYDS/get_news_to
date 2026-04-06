@@ -17,7 +17,7 @@ class CLSTelegraph(BaseModel):
     subjects: List[str] = Field(default_factory=list, description="主题标签")
     title: str = Field(..., description="标题")
     content: str = Field(..., description="正文")
-    source: Literal["cls", "jin10"] = Field(default="cls", description="资讯来源")
+    source: Literal["cls", "jin10", "10jqka"] = Field(default="cls", description="来源")
 
     llm_analysis: Optional[CLSTelegraphLLMAnalysis] = Field(
         default=None,

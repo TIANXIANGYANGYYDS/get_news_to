@@ -31,6 +31,9 @@ from app.crawlers.Get_cls_telegraph import (
 from app.crawlers.Get_jin10_telegraph import (
     fetch_latest_telegraphs as fetch_latest_jin10_telegraphs,
 )
+from app.crawlers.Get_10jqka_telegraph import (
+    fetch_latest_telegraphs as fetch_latest_10jqka_telegraphs,
+)
 from app.model import CLSTelegraph, CLSTelegraphLLMAnalysis
 
 logger = get_logger("bootstrap")
@@ -272,6 +275,12 @@ class Application:
         text = re.sub(r"\s*[-—]\s*财联社\s*$", "", text)
         text = re.sub(r"\s*金十数据\s*$", "", text)
         text = re.sub(r"\s*财联社\s*$", "", text)
+
+        text = re.sub(r"同花顺\d{1,2}月\d{1,2}日讯[，,:：]?", "", text)
+        text = re.sub(r"^\[?同花顺\]?[，,:：]?", "", text)
+        text = re.sub(r"\s*[-—]\s*同花顺\s*$", "", text)
+        text = re.sub(r"\s*同花顺\s*$", "", text)
+        text = re.sub(r"[（(]同花顺[）)]\s*$", "", text)
 
         # 去引号、括号、标点差异
         text = re.sub(r"[“”\"'`‘’]", "", text)
@@ -865,19 +874,63 @@ class Application:
         rows.sort(key=lambda x: x.publish_ts or 0)
         return rows
 
+    async def fetch_new_10jqka_telegraphs(
+        self,
+        latest_ts: int | None,
+        rn: int = 20,
+    ) -> list[CLSTelegraph]:
+        """
+        抓取最新一批 10jqka 快讯候选数据。
+
+        规则与 CLS / Jin10 基本一致：
+        1. 只保留 event_id 和 content 都存在的有效数据
+        2. 按 event_id 去重
+        3. latest_ts 按 10jqka 自己的 source 游标过滤
+        4. 最终按 publish_ts 升序返回
+        """
+        batch = await asyncio.to_thread(fetch_latest_10jqka_telegraphs, rn)
+
+        if not batch:
+            logger.info("no 10jqka telegraphs fetched")
+            return []
+
+        batch = [row for row in batch if row.event_id and row.content]
+        if not batch:
+            logger.info("empty valid 10jqka telegraph batch")
+            return []
+
+        rows = []
+        seen_event_ids = set()
+
+        for row in batch:
+            event_id = row.event_id
+            if event_id in seen_event_ids:
+                continue
+            seen_event_ids.add(event_id)
+
+            row_ts = row.publish_ts or 0
+
+            # 同样只过滤更早的数据，同秒重复交给 event_id 去重
+            if latest_ts is not None and row_ts < latest_ts:
+                continue
+
+            rows.append(row)
+
+        rows.sort(key=lambda x: x.publish_ts or 0)
+        return rows
+
     async def fetch_new_market_telegraphs(self) -> list[CLSTelegraph]:
         """
-        统一抓取市场资讯（CLS + Jin10）。
+        统一抓取市场资讯（CLS + Jin10 + 10jqka）。
 
         核心逻辑：
-        1. CLS 按 source="cls" 取自己的最新时间
-        2. Jin10 按 source="jin10" 取自己的最新时间
-        3. 分别抓取各自增量
-        4. 合并成一个统一待处理列表
-        5. 按时间升序返回，供后续统一分析
+        1. 各 source 分别获取自己的最新时间游标
+        2. 分别抓取各自增量
+        3. 合并成一个统一待处理列表
+        4. 按时间升序返回，供后续统一分析
 
         这样做的好处：
-        - 后面的 LLM、入库、衍生视图逻辑都不需要拆成两套
+        - 后面的 LLM、入库、衍生视图逻辑都不需要拆成三套
         """
         if self.cls_telegraph_repository is None:
             logger.warning("cls_telegraph_repository is not initialized")
@@ -885,6 +938,7 @@ class Application:
 
         cls_latest_ts = await self.cls_telegraph_repository.get_latest_publish_ts_by_source("cls")
         jin10_latest_ts = await self.cls_telegraph_repository.get_latest_publish_ts_by_source("jin10")
+        jqka_latest_ts = await self.cls_telegraph_repository.get_latest_publish_ts_by_source("10jqka")
 
         cls_rows = await self.fetch_new_cls_telegraphs(
             latest_ts=cls_latest_ts,
@@ -898,10 +952,15 @@ class Application:
             sleep_seconds=0.2,
         )
 
-        rows = cls_rows + jin10_rows
+        jqka_rows = await self.fetch_new_10jqka_telegraphs(
+            latest_ts=jqka_latest_ts,
+            rn=20,
+        )
+
+        rows = cls_rows + jin10_rows + jqka_rows
         rows.sort(key=lambda x: x.publish_ts or 0)
         return rows
-
+    
     async def sync_cls_telegraphs_once(self, send_insert_card: bool = True):
         """
         执行一轮市场资讯同步。
@@ -956,6 +1015,7 @@ class Application:
 
         cls_count = sum(1 for row in rows if row.source == "cls")
         jin10_count = sum(1 for row in rows if row.source == "jin10")
+        jqka_count = sum(1 for row in rows if row.source == "10jqka")
 
         enqueued_count = await self._enqueue_market_telegraphs(
             rows=rows,
@@ -964,20 +1024,24 @@ class Application:
 
         if enqueued_count <= 0:
             logger.info(
-                "no market telegraphs enqueued after pending-event dedup, cls_count=%s, jin10_count=%s, queue_size=%s",
+                "no market telegraphs enqueued after pending-event dedup, "
+                "cls_count=%s, jin10_count=%s, jqka_count=%s, queue_size=%s",
                 cls_count,
                 jin10_count,
+                jqka_count,
                 self.market_telegraph_queue.qsize(),
             )
             return
 
         max_ts = max((row.publish_ts or 0) for row in rows)
         logger.info(
-            "market telegraphs enqueued successfully, enqueue_count=%s, cls_count=%s, jin10_count=%s, "
-            "latest_publish_ts=%s, send_insert_card=%s, queue_size=%s",
+            "market telegraphs enqueued successfully, enqueue_count=%s, cls_count=%s, "
+            "jin10_count=%s, jqka_count=%s, latest_publish_ts=%s, "
+            "send_insert_card=%s, queue_size=%s",
             enqueued_count,
             cls_count,
             jin10_count,
+            jqka_count,
             max_ts,
             send_insert_card,
             self.market_telegraph_queue.qsize(),
@@ -1172,7 +1236,7 @@ class Application:
 
         # 启动时先同步一次市场资讯，但首次灌库不发入库卡，避免群里刷屏
         try:
-            await self.sync_cls_telegraphs_once(send_insert_card=False)
+            await self.sync_cls_telegraphs_once(send_insert_card=True)
         except Exception as e:
             logger.exception("initial market telegraph sync failed: %s", e)
 
