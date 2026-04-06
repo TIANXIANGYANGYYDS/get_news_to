@@ -93,6 +93,7 @@ class CardBuilder:
         mapping = {
             "cls": "财联社",
             "jin10": "金十",
+            "10jqka": "同花顺",
         }
         return mapping.get((source or "").strip().lower(), source or "其他数据源")
 
