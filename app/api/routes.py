@@ -45,7 +45,7 @@ async def send_test_card(application: Any = Depends(get_application)):
 @router.post("/tasks/daily-market-analysis", response_model=TaskTriggerResponse)
 async def send_daily_market_analysis(application: Any = Depends(get_application)):
     await application.send_daily_market_analysis_card()
-    return TaskTriggerResponse(message="daily market analysis completed")
+    return TaskTriggerResponse(message="daily market analysis task queued")
 
 
 @router.post("/tasks/cls-telegraphs/sync", response_model=TaskTriggerResponse)

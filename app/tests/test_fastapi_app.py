@@ -28,6 +28,7 @@ class DummyApplication:
         self.test_card_calls = 0
         self.market_analysis_calls = 0
         self.sync_calls = []
+        self.ensure_task_calls = 0
 
     async def startup(self):
         self.startup_calls += 1
@@ -43,6 +44,9 @@ class DummyApplication:
 
     async def sync_cls_telegraphs_once(self, send_insert_card: bool = True):
         self.sync_calls.append(send_insert_card)
+
+    async def ensure_today_daily_analysis_task_exists(self):
+        self.ensure_task_calls += 1
 
 
 class FastAPIAppTests(unittest.TestCase):
@@ -78,7 +82,7 @@ class FastAPIAppTests(unittest.TestCase):
             self.assertEqual(analysis_response.status_code, 200)
             self.assertEqual(
                 analysis_response.json(),
-                {"ok": True, "message": "daily market analysis completed"},
+                {"ok": True, "message": "daily market analysis task queued"},
             )
 
             sync_response = client.post(

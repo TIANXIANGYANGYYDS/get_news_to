@@ -12,6 +12,7 @@ from app.scheduler import DailyScheduler
 from app.llm.cls_telegraph_llm import analyze_cls_telegraph
 from app.repo import (
     CLSTelegraphRepository,
+    DailyAnalysisTaskRepository,
     DailyMarketAnalysisRepository,
     Sector3DDailySummaryRepository,
     SectorInvestmentPreferenceRankingRepository,
@@ -28,6 +29,7 @@ from app.crawlers.Get_10jqka_telegraph import (
 )
 from app.model import CLSTelegraph, CLSTelegraphLLMAnalysis
 from app.services.daily_market_analysis_service import DailyMarketAnalysisService
+from app.services.daily_analysis_task_service import DailyAnalysisTaskService
 from app.services.sector_view_service import SectorViewService
 from app.services.telegraph_deduplicator import TelegraphDeduplicator
 
@@ -86,6 +88,7 @@ class Application:
 
         # 每日盘前分析表 repository
         self.daily_market_analysis_repository = None
+        self.daily_analysis_task_repository = None
 
         # 轮询任务句柄
         self.cls_telegraph_polling_task = None
@@ -109,6 +112,9 @@ class Application:
         self.telegraph_deduplicator: TelegraphDeduplicator | None = None
         self.sector_view_service: SectorViewService | None = None
         self.daily_market_analysis_service: DailyMarketAnalysisService | None = None
+        self.daily_analysis_task_service: DailyAnalysisTaskService | None = None
+        self.daily_analysis_worker_task: asyncio.Task | None = None
+        self.daily_analysis_worker_owner = f"daily-analysis-worker-{id(self)}"
 
     async def _maybe_await(self, result):
         """
@@ -814,6 +820,8 @@ class Application:
         # 初始化每日盘前分析 repository
         self.daily_market_analysis_repository = DailyMarketAnalysisRepository(self.db)
         await self.daily_market_analysis_repository.create_indexes()
+        self.daily_analysis_task_repository = DailyAnalysisTaskRepository(self.db)
+        await self.daily_analysis_task_repository.create_indexes()
 
         # 初始化 service（第一阶段：拆去重、衍生视图、盘前分析）
         self.telegraph_deduplicator = TelegraphDeduplicator()
@@ -829,12 +837,29 @@ class Application:
             sector_investment_preference_ranking_repository=self.sector_investment_preference_ranking_repository,
             sector_market_heat_ranking_repository=self.sector_market_heat_ranking_repository,
         )
+        self.daily_analysis_task_service = DailyAnalysisTaskService(
+            task_repository=self.daily_analysis_task_repository,
+            market_analysis_service=self.daily_market_analysis_service,
+            notifier=self.notifier,
+            card_builder=self.card_builder,
+        )
 
         # 启动每日盘前调度器
         try:
             await self._start_scheduler()
         except Exception as e:
             logger.exception("start daily scheduler failed: %s", e)
+
+        # 启动时只登记任务，不阻塞等待 LLM 结果
+        try:
+            await self.ensure_today_daily_analysis_task_exists()
+        except Exception as e:
+            logger.exception("ensure daily analysis task on startup failed: %s", e)
+
+        # 启动每日盘前分析后台 worker（常驻重试，支持重启恢复）
+        self.daily_analysis_worker_task = asyncio.create_task(
+            self._daily_analysis_worker_loop()
+        )
 
         # 启动市场资讯 worker 池
         self.market_telegraph_worker_tasks = [
@@ -869,6 +894,12 @@ class Application:
         5. 关闭 Mongo 连接
         6. 关闭飞书 notifier
         """
+        if self.daily_analysis_worker_task is not None:
+            self.daily_analysis_worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.daily_analysis_worker_task
+            self.daily_analysis_worker_task = None
+
         if self.cls_telegraph_polling_task is not None:
             self.cls_telegraph_polling_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -930,8 +961,41 @@ class Application:
         if self.daily_market_analysis_service is None:
             logger.warning("daily_market_analysis_service is not initialized")
             return
-        try:
-            await self.daily_market_analysis_service.send_daily_market_analysis_card()
-        except Exception as e:
-            logger.exception("send_daily_market_analysis_card failed: %s", e)
-            raise
+        await self.ensure_today_daily_analysis_task_exists()
+
+    async def ensure_today_daily_analysis_task_exists(self):
+        if self.daily_analysis_task_service is None:
+            logger.warning("daily_analysis_task_service is not initialized")
+            return
+        await self.daily_analysis_task_service.ensure_today_task_exists()
+
+    async def _daily_analysis_worker_loop(self):
+        """
+        每日盘前分析任务 worker。
+        说明：
+        - 周期扫描 pending/retrying/running(锁过期) 任务
+        - 领取后执行，失败按指数退避重试
+        - 不会影响主服务生命周期成功
+        """
+        logger.info("daily analysis worker started, owner=%s", self.daily_analysis_worker_owner)
+        while True:
+            try:
+                if self.daily_analysis_task_repository is None or self.daily_analysis_task_service is None:
+                    await asyncio.sleep(2)
+                    continue
+
+                task = await self.daily_analysis_task_repository.claim_next_runnable_task(
+                    lock_owner=self.daily_analysis_worker_owner,
+                    lock_seconds=180,
+                )
+                if task is None:
+                    await asyncio.sleep(2)
+                    continue
+
+                await self.daily_analysis_task_service.execute_claimed_task(task)
+            except asyncio.CancelledError:
+                logger.info("daily analysis worker cancelled, owner=%s", self.daily_analysis_worker_owner)
+                raise
+            except Exception as e:
+                logger.exception("daily analysis worker loop error, owner=%s, error=%s", self.daily_analysis_worker_owner, e)
+                await asyncio.sleep(2)

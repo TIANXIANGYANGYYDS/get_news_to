@@ -34,8 +34,11 @@ def create_app(
 
         try:
             if should_run_on_startup:
-                logger.info("run startup market analysis task once")
-                await application.send_daily_market_analysis_card()
+                logger.info("register startup daily analysis task once")
+                try:
+                    await application.ensure_today_daily_analysis_task_exists()
+                except Exception as e:
+                    logger.exception("register startup daily analysis task failed, ignore: %s", e)
 
             yield
         finally:

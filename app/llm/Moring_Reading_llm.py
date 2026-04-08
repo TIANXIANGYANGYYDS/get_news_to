@@ -1,8 +1,10 @@
 import re
 from typing import Any
 
-from openai import OpenAI
+import httpx
+from openai import APITimeoutError, APIStatusError, OpenAI, RateLimitError
 from app.config import settings
+from app.logger import get_logger
 
 
 SECTOR_WHITELIST = [
@@ -21,6 +23,7 @@ SECTOR_SET = set(SECTOR_WHITELIST)
 SECTOR_TEXT = "、".join(SECTOR_WHITELIST)
 
 MAINLINE_PATTERN = re.compile(r"^(第[一二三四五]主线)：\s*(.+?)\s*$", re.MULTILINE)
+logger = get_logger("morning_reading_llm")
 
 
 PROMPT = f"""
@@ -451,12 +454,61 @@ def analyze_morning_data(
     2. 输出后校验
     3. 不合规时自动二次修正
     """
+    return analyze_morning_data_with_fallback(
+        morning_data=morning_data,
+        prev_day_review=prev_day_review,
+        investment_preference_ranking=investment_preference_ranking,
+        market_heat_ranking=market_heat_ranking,
+    )
+
+
+def _call_llm_once(*, user_prompt: str, enable_thinking: bool, timeout_seconds: float, max_retries: int) -> str:
     client = OpenAI(
         api_key=settings.api_key,
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        timeout=90.0,
+        timeout=timeout_seconds,
+        max_retries=max_retries,
     )
+    try:
+        resp = client.chat.completions.create(
+            model="qwen-plus",
+            messages=[
+                {"role": "system", "content": PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            extra_body={"enable_thinking": enable_thinking},
+        )
+        content = resp.choices[0].message.content or ""
+        if not content.strip():
+            raise ValueError("business validation failed: empty analysis result")
+        if not _all_mainlines_in_whitelist(content):
+            content = _repair_output_to_whitelist(client, content)
+        if not _extract_mainline_names(content):
+            raise ValueError("parse failed: no mainline names extracted")
+        return content
+    except (APITimeoutError, httpx.ReadTimeout) as e:
+        raise RuntimeError(f"timeout: {e}") from e
+    except RateLimitError as e:
+        raise RuntimeError(f"rate_limit: {e}") from e
+    except APIStatusError as e:
+        if e.status_code >= 500:
+            raise RuntimeError(f"server_5xx: {e}") from e
+        raise RuntimeError(f"api_status_error_{e.status_code}: {e}") from e
 
+
+def analyze_morning_data_with_fallback(
+    morning_data: dict,
+    prev_day_review: str = "",
+    investment_preference_ranking: dict | None = None,
+    market_heat_ranking: dict | None = None,
+) -> str:
+    """
+    盘前分析模型降级链路（业务层）。
+    1) 主策略：enable_thinking=True
+    2) 降级1：同模型，关闭 thinking
+    3) 降级2：两阶段（先摘要，再输出最终主线）
+    """
     user_prompt = _build_user_prompt(
         morning_data=morning_data,
         prev_day_review=prev_day_review,
@@ -464,23 +516,45 @@ def analyze_morning_data(
         market_heat_ranking=market_heat_ranking,
     )
 
-    resp = client.chat.completions.create(
-        model="qwen-plus",
-        messages=[
-            {"role": "system", "content": PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.3,
-        extra_body={"enable_thinking": True},
-    )
+    # 主策略与降级策略
+    strategy_defs = [
+        ("primary_thinking", lambda: _call_llm_once(user_prompt=user_prompt, enable_thinking=True, timeout_seconds=60.0, max_retries=1)),
+        ("fallback_no_thinking", lambda: _call_llm_once(user_prompt=user_prompt, enable_thinking=False, timeout_seconds=45.0, max_retries=1)),
+    ]
 
-    content = resp.choices[0].message.content or ""
+    # 降级2：两阶段摘要 -> 最终输出
+    def _two_stage_strategy():
+        summary_prompt = f"请先提炼关键交易线索（不超过10条），再用于主线输出：\n\n{user_prompt}"
+        summary = _call_llm_once(
+            user_prompt=summary_prompt,
+            enable_thinking=False,
+            timeout_seconds=30.0,
+            max_retries=1,
+        )
+        final_prompt = f"{user_prompt}\n\n【两阶段摘要结果】\n{summary}"
+        return _call_llm_once(
+            user_prompt=final_prompt,
+            enable_thinking=False,
+            timeout_seconds=45.0,
+            max_retries=1,
+        )
 
-    # 首轮不合规，则做一次板块名修正
-    if not _all_mainlines_in_whitelist(content):
-        repaired = _repair_output_to_whitelist(client, content)
-        if _all_mainlines_in_whitelist(repaired):
-            return repaired
-        return repaired  # 即使仍不完美，也优先返回纠偏后的版本
+    strategy_defs.append(("fallback_two_stage", _two_stage_strategy))
 
-    return content
+    last_error = None
+    for strategy_name, strategy in strategy_defs:
+        for attempt in range(1, 4):
+            try:
+                logger.info("daily analysis llm strategy start, strategy=%s, attempt=%s", strategy_name, attempt)
+                return strategy()
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "daily analysis llm strategy failed, strategy=%s, attempt=%s, error=%s",
+                    strategy_name,
+                    attempt,
+                    e,
+                )
+                if attempt >= 3:
+                    break
+    raise RuntimeError(f"business validation failed after all fallback strategies: {last_error}")
