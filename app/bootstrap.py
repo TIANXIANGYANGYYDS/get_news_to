@@ -1,12 +1,7 @@
 import asyncio
 import contextlib
 import inspect
-import re
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-
-import pandas as pd
-import exchange_calendars as xcals
+from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from app.config import settings
@@ -14,9 +9,6 @@ from app.feishu import FeishuNotifier
 from app.feishu.card_builder import CardBuilder
 from app.logger import get_logger
 from app.scheduler import DailyScheduler
-from app.crawlers.Get_Morning_Reading import fetch_and_split_morning_data
-from app.llm.Moring_Reading_llm import analyze_morning_data
-from app.crawlers.Get_fupan import fetch_fupan_full_visible_text, build_fupan_url
 from app.llm.cls_telegraph_llm import analyze_cls_telegraph
 from app.repo import (
     CLSTelegraphRepository,
@@ -35,14 +27,12 @@ from app.crawlers.Get_10jqka_telegraph import (
     fetch_latest_telegraphs as fetch_latest_10jqka_telegraphs,
 )
 from app.model import CLSTelegraph, CLSTelegraphLLMAnalysis
+from app.services.daily_market_analysis_service import DailyMarketAnalysisService
+from app.services.sector_view_service import SectorViewService
+from app.services.telegraph_deduplicator import TelegraphDeduplicator
 
 logger = get_logger("bootstrap")
 
-# A 股主板日历，这里使用上交所交易日历即可覆盖常见 A 股交易日判断逻辑
-XSHG = xcals.get_calendar("XSHG")
-
-# 中国时区，所有交易日、盘前逻辑、业务日期计算都统一按这个时区处理
-CN_TZ = ZoneInfo("Asia/Shanghai")
 
 
 class Application:
@@ -115,82 +105,10 @@ class Application:
         self.pending_event_ids: set[str] = set()
         self.pending_event_ids_lock = asyncio.Lock()
 
-        # 版块衍生视图刷新事件 + 后台刷新任务
-        # worker 处理完后只打事件，不在每条上直接重刷，避免太重
-        self.sector_views_refresh_event = asyncio.Event()
-        self.sector_views_refresh_task = None
-
-    def get_a_share_trade_dates(self, now: datetime | None = None) -> tuple[str, str]:
-        """
-        获取当前业务对应的 A 股“今日交易日”和“前一交易日”。
-
-        规则：
-        1. 如果当前时间 >= 上午 9 点，则优先认为今天是候选交易日
-        2. 如果当前时间 < 上午 9 点，则候选日期往前退一天
-        3. 若候选日期不是交易日，则回退到最近一个交易日
-        4. 再基于该交易日获取前一个交易日
-
-        返回：
-        - today_trade_date: 当前业务交易日，格式 YYYYMMDD
-        - prev_trade_date: 前一个交易日，格式 YYYYMMDD
-        """
-        now = now.astimezone(CN_TZ) if now else datetime.now(CN_TZ)
-
-        # 9 点前默认还处于“前一个交易日夜间/盘前准备阶段”
-        candidate_date = now.date() if now.hour >= 9 else (now - timedelta(days=1)).date()
-        candidate = pd.Timestamp(candidate_date)
-
-        if XSHG.is_session(candidate):
-            today_trade_day = candidate
-        else:
-            # 非交易日时不能直接传给 previous_session，否则 exchange_calendars 会报 NotSessionError
-            today_trade_day = XSHG.date_to_session(candidate, direction="previous")
-
-        prev_trade_day = XSHG.previous_session(today_trade_day)
-
-        return today_trade_day.strftime("%Y%m%d"), prev_trade_day.strftime("%Y%m%d")
-
-    @staticmethod
-    def _format_trade_date(trade_date: str) -> str:
-        """
-        交易日格式标准化：
-        把 YYYYMMDD 转成 YYYY-MM-DD。
-
-        用途：
-        - 早盘数据里的日期字段有时直接是 YYYYMMDD
-        - 卡片展示和入库时更适合统一成 YYYY-MM-DD
-        """
-        trade_date = (trade_date or "").strip()
-        if len(trade_date) == 8 and trade_date.isdigit():
-            return f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
-        return trade_date
-
-    def _build_daily_market_analysis_doc(
-        self,
-        *,
-        analysis_date: str,
-        trade_date: str,
-        prev_trade_date: str,
-        morning_data: dict,
-        prev_day_review: str,
-        analysis_text: str,
-    ) -> dict:
-        """
-        构造“盘前主线分析”入库文档。
-
-        说明：
-        - analysis_date 是唯一键语义，同一天只保留一条
-        - 如果当天重复执行，会通过 upsert 覆盖更新，而不是新增多条
-        """
-        return {
-            "analysis_date": analysis_date,
-            "trade_date": trade_date,
-            "prev_trade_date": prev_trade_date,
-            "source": morning_data.get("source"),
-            "morning_data": morning_data,
-            "prev_day_review": prev_day_review,
-            "analysis_text": analysis_text,
-        }
+        # 拆分后的独立 service
+        self.telegraph_deduplicator: TelegraphDeduplicator | None = None
+        self.sector_view_service: SectorViewService | None = None
+        self.daily_market_analysis_service: DailyMarketAnalysisService | None = None
 
     async def _maybe_await(self, result):
         """
@@ -248,219 +166,12 @@ class Application:
 
         logger.warning("daily scheduler has no shutdown()/stop() method, skip stopping")
 
-    @staticmethod
-    def _normalize_dedup_text(text: str) -> str:
-        """
-        文本归一化，用于跨平台内容去重。
-
-        处理目标：
-        1. 去站点来源前后缀
-        2. 去日期来源口径差异
-        3. 去空白、换行、标点差异
-        4. 尽量把“同一条资讯的不同平台文案包装”压缩到相近形式
-        """
-        text = (text or "").strip()
-
-        if not text:
-            return ""
-
-        # 去来源前缀 / 口径差异
-        text = re.sub(r"财联社\d{1,2}月\d{1,2}日电[，,:：]?", "", text)
-        text = re.sub(r"金十数据\d{1,2}月\d{1,2}日讯[，,:：]?", "", text)
-        text = re.sub(r"^\[?金十数据\]?[，,:：]?", "", text)
-        text = re.sub(r"^\[?财联社\]?[，,:：]?", "", text)
-
-        # 去尾部站点标识
-        text = re.sub(r"\s*[-—]\s*金十数据\s*$", "", text)
-        text = re.sub(r"\s*[-—]\s*财联社\s*$", "", text)
-        text = re.sub(r"\s*金十数据\s*$", "", text)
-        text = re.sub(r"\s*财联社\s*$", "", text)
-
-        text = re.sub(r"同花顺\d{1,2}月\d{1,2}日讯[，,:：]?", "", text)
-        text = re.sub(r"^\[?同花顺\]?[，,:：]?", "", text)
-        text = re.sub(r"\s*[-—]\s*同花顺\s*$", "", text)
-        text = re.sub(r"\s*同花顺\s*$", "", text)
-        text = re.sub(r"[（(]同花顺[）)]\s*$", "", text)
-
-        # 去引号、括号、标点差异
-        text = re.sub(r"[“”\"'`‘’]", "", text)
-        text = re.sub(r"[，。；：！？、】【（）()、,.;:!?·\-—\[\]]", "", text)
-
-        # 去空白
-        text = re.sub(r"\s+", "", text)
-
-        return text.lower()
-
-    @staticmethod
-    def _is_valid_dedup_title(title: str) -> bool:
-        """
-        判断标题是否适合用来做去重。
-
-        规则：
-        - 太短的不算
-        - 太模板化、太泛化的不算
-        - 这些情况退回按内容去重更稳
-        """
-        title = (title or "").strip()
-        if not title:
-            return False
-
-        if len(title) < 6:
-            return False
-
-        bad_patterns = [
-            r"^金十图示",
-            r"^新闻联播今日要点",
-            r"^今日要点$",
-            r"^金十数据$",
-            r"^财联社$",
-            r"^快讯$",
-        ]
-
-        for pattern in bad_patterns:
-            if re.search(pattern, title):
-                return False
-
-        return True
-
-    @staticmethod
-    def _strip_title_from_content(content: str, title: str) -> str:
-        """
-        如果正文开头就是标题，则把标题从正文前缀剥掉。
-
-        作用：
-        - 有的平台是“标题 + 正文”
-        - 有的平台只有“正文”
-        - 去掉标题后，更容易让两边内容 key 对齐
-        """
-        content = (content or "").strip()
-        title = (title or "").strip()
-
-        if not content or not title:
-            return content
-
-        # 兼容：
-        # 1. 标题 正文
-        # 2. 【标题】正文
-        # 3. 标题：正文
-        pattern = rf"^\s*[【\[]?{re.escape(title)}[】\]]?\s*[-—:：，,\s]*"
-        stripped = re.sub(pattern, "", content, count=1)
-
-        return stripped.strip() or content
-
-    def _build_cross_source_dedup_keys(self, row: CLSTelegraph) -> set[str]:
-        """
-        为单条资讯构造“跨平台去重 key 集合”。
-
-        设计思想：
-        - 不是只生成一个 key，而是生成一组 key
-        - 这样能处理：
-          1. 一边有标题、一边没标题
-          2. 一边正文里带标题、一边正文不带标题
-          3. 来源包装口径不同但本质是同一条消息
-
-        规则：
-        - 有有效标题时：加入 title key
-        - 同时始终加入 content key
-        - 如果标题存在，还会再生成一个“去掉标题前缀后的 content key”
-        """
-        keys = set()
-
-        title = (row.title or "").strip()
-        content = (row.content or "").strip()
-
-        if self._is_valid_dedup_title(title):
-            norm_title = self._normalize_dedup_text(title)
-            if norm_title:
-                keys.add(f"title::{norm_title}")
-
-        norm_content = self._normalize_dedup_text(content)
-        if len(norm_content) >= 12:
-            keys.add(f"content::{norm_content}")
-
-        if title:
-            stripped_content = self._strip_title_from_content(content, title)
-            norm_stripped_content = self._normalize_dedup_text(stripped_content)
-            if len(norm_stripped_content) >= 12:
-                keys.add(f"content::{norm_stripped_content}")
-
-        return keys
-
-    @staticmethod
-    def _build_duplicate_preference_score(row: CLSTelegraph) -> tuple:
-        """
-        当两条资讯被判定为重复时，决定保留哪一条。
-
-        当前偏好：
-        1. 正文更长的优先（信息量更大）
-        2. subjects 更多的优先
-        3. 有标题的优先
-        4. CLS 略微优先（因为你原始链路就是从 CLS 起家的）
-        5. publish_ts 更新的优先
-        """
-        return (
-            len((row.content or "").strip()),
-            len(row.subjects or []),
-            1 if (row.title or "").strip() else 0,
-            1 if row.source == "cls" else 0,
-            row.publish_ts or 0,
-        )
-
-    def _pick_better_duplicate_row(
-        self,
-        old_row: CLSTelegraph,
-        new_row: CLSTelegraph,
-    ) -> CLSTelegraph:
-        """
-        在两条重复资讯里挑一条更适合保留的。
-        """
-        old_score = self._build_duplicate_preference_score(old_row)
-        new_score = self._build_duplicate_preference_score(new_row)
-
-        return new_row if new_score > old_score else old_row
-
     def _dedup_rows_in_batch(self, rows: list[CLSTelegraph]) -> list[CLSTelegraph]:
-        """
-        对“本轮合并后的 CLS + Jin10 批次”做内容级去重。
-
-        逻辑：
-        - 先按 dedup key 集合判断是否重复
-        - 如果重复，保留信息更完整的一条
-        - 这样能拦住“同一轮里两个平台同时抓到同一条资讯”的情况
-        """
-        if not rows:
+        if self.telegraph_deduplicator is None:
+            logger.warning("telegraph_deduplicator is not initialized")
             return rows
 
-        deduped_rows: list[CLSTelegraph] = []
-        deduped_keys: list[set[str]] = []
-
-        for row in rows:
-            row_keys = self._build_cross_source_dedup_keys(row)
-
-            if not row_keys:
-                deduped_rows.append(row)
-                deduped_keys.append(set())
-                continue
-
-            matched_index = None
-            for idx, existing_keys in enumerate(deduped_keys):
-                if row_keys & existing_keys:
-                    matched_index = idx
-                    break
-
-            if matched_index is None:
-                deduped_rows.append(row)
-                deduped_keys.append(set(row_keys))
-                continue
-
-            kept_row = deduped_rows[matched_index]
-            better_row = self._pick_better_duplicate_row(kept_row, row)
-
-            deduped_rows[matched_index] = better_row
-            deduped_keys[matched_index] = deduped_keys[matched_index] | row_keys
-
-        deduped_rows.sort(key=lambda x: x.publish_ts or 0)
-
+        deduped_rows = self.telegraph_deduplicator.dedup_rows_in_batch(rows)
         removed_count = len(rows) - len(deduped_rows)
         if removed_count > 0:
             logger.info("batch cross-source dedup removed %s duplicate rows", removed_count)
@@ -636,7 +347,8 @@ class Application:
                 )
 
                 # 有新处理完成的数据后，通知后台统一刷新衍生视图
-                self.sector_views_refresh_event.set()
+                if self.sector_view_service is not None:
+                    self.sector_view_service.mark_dirty()
 
             except asyncio.CancelledError:
                 logger.info("market telegraph worker cancelled, worker=%s", worker_no)
@@ -655,120 +367,6 @@ class Application:
 
                 if got_item:
                     self.market_telegraph_queue.task_done()
-
-    async def _refresh_sector_3d_daily_summary(self):
-        """
-        重建“当天实时三日内版块汇总”。
-
-        说明：
-        - 该方法只负责触发 repository 重算并记录日志
-        - 失败只记日志，不影响资讯主同步链路
-        - 即使没有新增新闻，只要窗口右移，也有必要重建
-        """
-        if self.sector_3d_daily_summary_repository is None:
-            logger.warning("sector_3d_daily_summary_repository is not initialized")
-            return
-
-        try:
-            summary_doc = await self.sector_3d_daily_summary_repository.rebuild_realtime_3d_summary()
-            logger.info(
-                "sector 3d daily summary updated, biz_date=%s, sector_count=%s, total_news_count=%s, total_score_sum=%s",
-                summary_doc.get("biz_date"),
-                summary_doc.get("sector_count"),
-                summary_doc.get("total_news_count"),
-                summary_doc.get("total_score_sum"),
-            )
-        except Exception as e:
-            logger.exception("refresh sector 3d daily summary failed: %s", e)
-
-    async def _refresh_sector_investment_preference_ranking(self):
-        """
-        重建“当天市场投资倾向排行榜”。
-
-        说明：
-        - 基于 cls_telegraphs 已入库并已完成 llm_analysis 的数据进行重算
-        - 失败只记日志，不影响主流程
-        """
-        if self.sector_investment_preference_ranking_repository is None:
-            logger.warning("sector_investment_preference_ranking_repository is not initialized")
-            return
-
-        try:
-            ranking_doc = await self.sector_investment_preference_ranking_repository.rebuild_realtime_ranking()
-            logger.info(
-                "sector investment preference ranking updated, biz_date=%s, sector_count=%s, total_news_count=%s",
-                ranking_doc.get("biz_date"),
-                ranking_doc.get("sector_count"),
-                ranking_doc.get("total_news_count"),
-            )
-        except Exception as e:
-            logger.exception("refresh sector investment preference ranking failed: %s", e)
-
-    async def _refresh_sector_market_heat_ranking(self):
-        """
-        重建“当天市场热度排行榜”。
-
-        说明：
-        - 基于 cls_telegraphs 已入库的数据进行重算
-        - 只使用数量 + 时间，不使用单条新闻 score
-        - 失败只记日志，不影响主流程
-        """
-        if self.sector_market_heat_ranking_repository is None:
-            logger.warning("sector_market_heat_ranking_repository is not initialized")
-            return
-
-        try:
-            ranking_doc = await self.sector_market_heat_ranking_repository.rebuild_realtime_ranking()
-            logger.info(
-                "sector market heat ranking updated, biz_date=%s, sector_count=%s, total_news_count=%s",
-                ranking_doc.get("biz_date"),
-                ranking_doc.get("sector_count"),
-                ranking_doc.get("total_news_count"),
-            )
-        except Exception as e:
-            logger.exception("refresh sector market heat ranking failed: %s", e)
-
-    async def _refresh_sector_views(self):
-        """
-        统一刷新所有基于 cls_telegraphs 的版块衍生视图。
-
-        当前包括：
-        1. 实时三日内版块汇总
-        2. 市场投资倾向排行榜
-        3. 市场热度排行榜
-
-        设计目的：
-        - 让同步入口只调一个刷新方法
-        - 避免多处出口漏刷新
-        """
-        await self._refresh_sector_3d_daily_summary()
-        await self._refresh_sector_investment_preference_ranking()
-        await self._refresh_sector_market_heat_ranking()
-
-    async def _sector_views_refresh_loop(self):
-        """
-        版块衍生视图后台刷新循环。
-
-        设计：
-        - worker 每处理完一条只 set event
-        - 这里统一做一个轻微 debounce，再批量刷新
-        - 避免 5 个 worker 每条都直接触发全量重算
-        """
-        while True:
-            try:
-                await self.sector_views_refresh_event.wait()
-
-                # 简单 debounce：等几秒，尽量合并一批已完成处理的结果
-                await asyncio.sleep(5)
-
-                self.sector_views_refresh_event.clear()
-                await self._refresh_sector_views()
-
-            except asyncio.CancelledError:
-                logger.info("sector views refresh loop cancelled")
-                raise
-            except Exception as e:
-                logger.exception("sector views refresh loop failed: %s", e)
 
     async def fetch_new_cls_telegraphs(
         self,
@@ -1099,7 +697,7 @@ class Application:
             ## 目前直接用当前日期的分析结果，后续如果需要更精确的“资讯发布时间对应的分析结果”，可以改成根据资讯 publish_ts 去找对应的 analysis_date
             # today_trade_date, _ = self.get_a_share_trade_dates()
             # analysis_date = self._format_trade_date(today_trade_date)
-            analysis_date = datetime.now(CN_TZ).date().isoformat()
+            analysis_date = datetime.now().date().isoformat()
         except Exception as e:
             logger.exception("resolve card analysis_date failed: %s", e)
             return investment_top5, heat_top5
@@ -1217,6 +815,21 @@ class Application:
         self.daily_market_analysis_repository = DailyMarketAnalysisRepository(self.db)
         await self.daily_market_analysis_repository.create_indexes()
 
+        # 初始化 service（第一阶段：拆去重、衍生视图、盘前分析）
+        self.telegraph_deduplicator = TelegraphDeduplicator()
+        self.sector_view_service = SectorViewService(
+            sector_3d_daily_summary_repository=self.sector_3d_daily_summary_repository,
+            sector_investment_preference_ranking_repository=self.sector_investment_preference_ranking_repository,
+            sector_market_heat_ranking_repository=self.sector_market_heat_ranking_repository,
+        )
+        self.daily_market_analysis_service = DailyMarketAnalysisService(
+            notifier=self.notifier,
+            card_builder=self.card_builder,
+            daily_market_analysis_repository=self.daily_market_analysis_repository,
+            sector_investment_preference_ranking_repository=self.sector_investment_preference_ranking_repository,
+            sector_market_heat_ranking_repository=self.sector_market_heat_ranking_repository,
+        )
+
         # 启动每日盘前调度器
         try:
             await self._start_scheduler()
@@ -1230,9 +843,8 @@ class Application:
         ]
 
         # 启动版块衍生视图后台刷新任务
-        self.sector_views_refresh_task = asyncio.create_task(
-            self._sector_views_refresh_loop()
-        )
+        if self.sector_view_service is not None:
+            await self.sector_view_service.startup()
 
         # 启动时先同步一次市场资讯，但首次灌库不发入库卡，避免群里刷屏
         try:
@@ -1263,11 +875,8 @@ class Application:
                 await self.cls_telegraph_polling_task
             self.cls_telegraph_polling_task = None
 
-        if self.sector_views_refresh_task is not None:
-            self.sector_views_refresh_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.sector_views_refresh_task
-            self.sector_views_refresh_task = None
+        if self.sector_view_service is not None:
+            await self.sector_view_service.shutdown()
 
         if self.market_telegraph_worker_tasks:
             for task in self.market_telegraph_worker_tasks:
@@ -1297,9 +906,10 @@ class Application:
         - 验证飞书发送链路是否正常
         - 验证卡片渲染样式是否符合预期
         """
-        card = self.card_builder.build_daily_test_card()
-        await self.notifier.send_card(card)
-        logger.info("daily test card sent")
+        if self.daily_market_analysis_service is None:
+            logger.warning("daily_market_analysis_service is not initialized")
+            return
+        await self.daily_market_analysis_service.send_daily_test_card()
 
     async def send_daily_market_analysis_card(self):
         """
@@ -1317,123 +927,11 @@ class Application:
         - 同一天只保留一条记录
         - 如果因为重启或重跑导致当天再次执行，会更新当天记录，不会新增第二条
         """
+        if self.daily_market_analysis_service is None:
+            logger.warning("daily_market_analysis_service is not initialized")
+            return
         try:
-            today_trade_date, prev_trade_date = self.get_a_share_trade_dates()
-
-            logger.info("start fetching morning market data")
-            morning_data = fetch_and_split_morning_data(today_trade_date)
-
-            if not morning_data:
-                logger.warning("morning_data is empty")
-                return
-
-            logger.info(
-                "morning data fetched successfully, date=%s, raw_content_len=%s",
-                morning_data.get("date"),
-                len(morning_data.get("raw_content", "")),
-            )
-
-            logger.info("start fetching previous day review")
-            review_url = build_fupan_url(prev_trade_date)
-
-            prev_day_review = await asyncio.to_thread(
-                fetch_fupan_full_visible_text,
-                review_url,
-            )
-
-            logger.info(
-                "previous day review fetched successfully, review_len=%s",
-                len(prev_day_review or ""),
-            )
-
-            # 优先使用早盘数据中的日期；若缺失，则用当前交易日格式化结果兜底
-            analysis_date = (
-                (morning_data.get("date") or "").strip()
-                or self._format_trade_date(today_trade_date)
-            )
-
-            investment_preference_ranking = None
-            market_heat_ranking = None
-
-            if self.sector_investment_preference_ranking_repository is not None:
-                try:
-                    investment_preference_ranking = await (
-                        self.sector_investment_preference_ranking_repository.get_investment_preference_ranking(
-                            analysis_date,
-                            limit=12,
-                        )
-                    )
-                except Exception as e:
-                    logger.exception(
-                        "load investment preference ranking failed, analysis_date=%s, err=%s",
-                        analysis_date,
-                        e,
-                    )
-            else:
-                logger.warning("sector_investment_preference_ranking_repository is not initialized")
-
-            if self.sector_market_heat_ranking_repository is not None:
-                try:
-                    market_heat_ranking = await self.sector_market_heat_ranking_repository.get_market_heat_ranking(
-                        analysis_date,
-                        limit=12,
-                    )
-                except Exception as e:
-                    logger.exception(
-                        "load market heat ranking failed, analysis_date=%s, err=%s",
-                        analysis_date,
-                        e,
-                    )
-            else:
-                logger.warning("sector_market_heat_ranking_repository is not initialized")
-
-            logger.info("start llm analysis for morning market data")
-            analysis_text = await asyncio.to_thread(
-                analyze_morning_data,
-                morning_data,
-                prev_day_review,
-                investment_preference_ranking,
-                market_heat_ranking,
-            )
-
-            if not analysis_text:
-                logger.warning("analysis_text is empty")
-                return
-
-            logger.info("llm analysis finished, analysis_len=%s", len(analysis_text))
-
-            # 先入库/更新，保证当天只有一条
-            if self.daily_market_analysis_repository is not None:
-                doc = self._build_daily_market_analysis_doc(
-                    analysis_date=analysis_date,
-                    trade_date=today_trade_date,
-                    prev_trade_date=prev_trade_date,
-                    morning_data=morning_data,
-                    prev_day_review=prev_day_review,
-                    analysis_text=analysis_text,
-                )
-
-                update_result = await self.daily_market_analysis_repository.upsert_one(doc)
-                is_new_insert = bool(getattr(update_result, "upserted_id", None))
-
-                logger.info(
-                    "daily market analysis saved successfully, analysis_date=%s, action=%s",
-                    analysis_date,
-                    "insert" if is_new_insert else "update",
-                )
-            else:
-                logger.warning("daily_market_analysis_repository is not initialized")
-
-            # 发送盘前主线分析飞书卡片
-            card = self.card_builder.build_daily_market_analysis_card(
-                date=analysis_date,
-                analysis_text=analysis_text,
-                morning_data=morning_data,
-            )
-
-            await self.notifier.send_card(card)
-            logger.info("daily market analysis card sent")
-
+            await self.daily_market_analysis_service.send_daily_market_analysis_card()
         except Exception as e:
             logger.exception("send_daily_market_analysis_card failed: %s", e)
             raise
