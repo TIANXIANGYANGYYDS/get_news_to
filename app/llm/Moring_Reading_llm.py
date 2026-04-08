@@ -21,6 +21,8 @@ SECTOR_SET = set(SECTOR_WHITELIST)
 SECTOR_TEXT = "、".join(SECTOR_WHITELIST)
 
 MAINLINE_PATTERN = re.compile(r"^(第[一二三四五]主线)：\s*(.+?)\s*$", re.MULTILINE)
+WHITESPACE_PATTERN = re.compile(r"[ \t]+")
+MULTI_NEWLINE_PATTERN = re.compile(r"\n{3,}")
 
 
 PROMPT = f"""
@@ -350,6 +352,20 @@ def _format_ranking_for_prompt(title: str, ranking_payload: dict | None) -> str:
     return "\n".join(lines)
 
 
+def _normalize_prompt_text(value: Any, *, max_chars: int = 2200) -> str:
+    """
+    压缩 prompt 输入，减少无效噪音，避免请求过长导致模型注意力分散。
+    """
+    text = str(value or "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = WHITESPACE_PATTERN.sub(" ", text)
+    text = MULTI_NEWLINE_PATTERN.sub("\n\n", text)
+    text = text.strip()
+    if len(text) > max_chars:
+        return text[:max_chars] + "\n...（已截断）"
+    return text
+
+
 def _build_user_prompt(
     morning_data: dict,
     prev_day_review: str = "",
@@ -388,28 +404,28 @@ def _build_user_prompt(
 {market_heat_ranking_text}
 
 【前一交易日复盘】
-{prev_day_review}
+{_normalize_prompt_text(prev_day_review, max_chars=2400)}
 
 【头部摘要】
-{sections.get("head", "")}
+{_normalize_prompt_text(sections.get("head", ""), max_chars=1800)}
 
 【隔夜海外行情动态】
-{sections.get("overseas", "")}
+{_normalize_prompt_text(sections.get("overseas", ""), max_chars=1600)}
 
 【昨日国内行情回顾】
-{sections.get("domestic", "")}
+{_normalize_prompt_text(sections.get("domestic", ""), max_chars=1800)}
 
 【重大新闻汇总】
-{sections.get("major_news", "")}
+{_normalize_prompt_text(sections.get("major_news", ""), max_chars=2200)}
 
 【公司公告】
-{sections.get("company_announcements", "")}
+{_normalize_prompt_text(sections.get("company_announcements", ""), max_chars=1600)}
 
 【券商观点】
-{sections.get("broker_views", "")}
+{_normalize_prompt_text(sections.get("broker_views", ""), max_chars=1800)}
 
 【今日重点关注的财经数据与事件】
-{sections.get("calendar", "")}
+{_normalize_prompt_text(sections.get("calendar", ""), max_chars=1200)}
 """
 
 
@@ -470,7 +486,8 @@ def analyze_morning_data(
             {"role": "system", "content": PROMPT},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=0.3,
+        temperature=0.1,
+        top_p=0.7,
         extra_body={"enable_thinking": True},
     )
 

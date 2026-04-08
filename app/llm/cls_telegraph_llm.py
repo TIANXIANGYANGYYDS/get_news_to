@@ -504,6 +504,7 @@ def _call_llm_json(client: OpenAI, messages: list, temperature: float = 0.2) -> 
         "model": "qwen-plus",
         "messages": messages,
         "temperature": temperature,
+        "top_p": 0.7,
         "extra_body": {"enable_thinking": True},
     }
 
@@ -654,6 +655,8 @@ def _normalize_analysis_for_output(analysis: CLSTelegraphLLMAnalysis) -> CLSTele
 
 def analyze_cls_telegraph(content: str, subjects: Optional[list[str]] = None) -> CLSTelegraphLLMAnalysis:
     content = (content or "").strip()
+    if len(content) > 2600:
+        content = content[:2600] + "\n...（已截断）"
     subjects = subjects or []
 
     if not content:
