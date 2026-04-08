@@ -9,7 +9,7 @@ from app.feishu import FeishuNotifier
 from app.feishu.card_builder import CardBuilder
 from app.logger import get_logger
 from app.scheduler import DailyScheduler
-from app.llm.cls_telegraph_llm import analyze_cls_telegraph
+from app.llm.news_pipeline_llm import analyze_cls_telegraph_v2
 from app.repo import (
     CLSTelegraphRepository,
     DailyMarketAnalysisRepository,
@@ -273,9 +273,13 @@ class Application:
 
         try:
             analysis = await asyncio.to_thread(
-                analyze_cls_telegraph,
+                analyze_cls_telegraph_v2,
                 content,
                 subjects,
+                title=row.title,
+                publish_time=row.publish_time,
+                source=row.source,
+                event_id=row.event_id,
             )
 
             logger.info(

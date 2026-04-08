@@ -61,16 +61,18 @@ async def sync_cls_telegraphs(
 
 @router.post("/analysis/cls-telegraph", response_model=TelegraphAnalysisResponse)
 async def analyze_cls_telegraph_endpoint(payload: TelegraphAnalysisRequest):
-    from app.llm.cls_telegraph_llm import analyze_cls_telegraph
+    from app.llm.news_pipeline_llm import analyze_cls_telegraph_v2
 
     title = payload.title.strip()
     content = payload.content.strip()
     full_content = f"{title}\n\n{content}" if title else content
 
     analysis = await asyncio.to_thread(
-        analyze_cls_telegraph,
+        analyze_cls_telegraph_v2,
         full_content,
         payload.subjects,
+        title=title,
+        source="api_manual",
     )
     return TelegraphAnalysisResponse(analysis=analysis)
 
