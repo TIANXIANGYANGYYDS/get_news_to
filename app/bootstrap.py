@@ -1,7 +1,6 @@
 import asyncio
 import contextlib
 import inspect
-import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -14,6 +13,7 @@ from app.feishu import FeishuNotifier
 from app.feishu.card_builder import CardBuilder
 from app.logger import get_logger
 from app.scheduler import DailyScheduler
+from app.services import TelegraphService
 from app.crawlers.Get_Morning_Reading import fetch_and_split_morning_data
 from app.llm.Moring_Reading_llm import analyze_morning_data
 from app.crawlers.Get_fupan import fetch_fupan_full_visible_text, build_fupan_url
@@ -119,6 +119,9 @@ class Application:
         # worker 处理完后只打事件，不在每条上直接重刷，避免太重
         self.sector_views_refresh_event = asyncio.Event()
         self.sector_views_refresh_task = None
+
+        # 市场资讯领域服务：去重、增量过滤等
+        self.telegraph_service = TelegraphService()
 
     def get_a_share_trade_dates(self, now: datetime | None = None) -> tuple[str, str]:
         """
@@ -248,177 +251,6 @@ class Application:
 
         logger.warning("daily scheduler has no shutdown()/stop() method, skip stopping")
 
-    @staticmethod
-    def _normalize_dedup_text(text: str) -> str:
-        """
-        文本归一化，用于跨平台内容去重。
-
-        处理目标：
-        1. 去站点来源前后缀
-        2. 去日期来源口径差异
-        3. 去空白、换行、标点差异
-        4. 尽量把“同一条资讯的不同平台文案包装”压缩到相近形式
-        """
-        text = (text or "").strip()
-
-        if not text:
-            return ""
-
-        # 去来源前缀 / 口径差异
-        text = re.sub(r"财联社\d{1,2}月\d{1,2}日电[，,:：]?", "", text)
-        text = re.sub(r"金十数据\d{1,2}月\d{1,2}日讯[，,:：]?", "", text)
-        text = re.sub(r"^\[?金十数据\]?[，,:：]?", "", text)
-        text = re.sub(r"^\[?财联社\]?[，,:：]?", "", text)
-
-        # 去尾部站点标识
-        text = re.sub(r"\s*[-—]\s*金十数据\s*$", "", text)
-        text = re.sub(r"\s*[-—]\s*财联社\s*$", "", text)
-        text = re.sub(r"\s*金十数据\s*$", "", text)
-        text = re.sub(r"\s*财联社\s*$", "", text)
-
-        text = re.sub(r"同花顺\d{1,2}月\d{1,2}日讯[，,:：]?", "", text)
-        text = re.sub(r"^\[?同花顺\]?[，,:：]?", "", text)
-        text = re.sub(r"\s*[-—]\s*同花顺\s*$", "", text)
-        text = re.sub(r"\s*同花顺\s*$", "", text)
-        text = re.sub(r"[（(]同花顺[）)]\s*$", "", text)
-
-        # 去引号、括号、标点差异
-        text = re.sub(r"[“”\"'`‘’]", "", text)
-        text = re.sub(r"[，。；：！？、】【（）()、,.;:!?·\-—\[\]]", "", text)
-
-        # 去空白
-        text = re.sub(r"\s+", "", text)
-
-        return text.lower()
-
-    @staticmethod
-    def _is_valid_dedup_title(title: str) -> bool:
-        """
-        判断标题是否适合用来做去重。
-
-        规则：
-        - 太短的不算
-        - 太模板化、太泛化的不算
-        - 这些情况退回按内容去重更稳
-        """
-        title = (title or "").strip()
-        if not title:
-            return False
-
-        if len(title) < 6:
-            return False
-
-        bad_patterns = [
-            r"^金十图示",
-            r"^新闻联播今日要点",
-            r"^今日要点$",
-            r"^金十数据$",
-            r"^财联社$",
-            r"^快讯$",
-        ]
-
-        for pattern in bad_patterns:
-            if re.search(pattern, title):
-                return False
-
-        return True
-
-    @staticmethod
-    def _strip_title_from_content(content: str, title: str) -> str:
-        """
-        如果正文开头就是标题，则把标题从正文前缀剥掉。
-
-        作用：
-        - 有的平台是“标题 + 正文”
-        - 有的平台只有“正文”
-        - 去掉标题后，更容易让两边内容 key 对齐
-        """
-        content = (content or "").strip()
-        title = (title or "").strip()
-
-        if not content or not title:
-            return content
-
-        # 兼容：
-        # 1. 标题 正文
-        # 2. 【标题】正文
-        # 3. 标题：正文
-        pattern = rf"^\s*[【\[]?{re.escape(title)}[】\]]?\s*[-—:：，,\s]*"
-        stripped = re.sub(pattern, "", content, count=1)
-
-        return stripped.strip() or content
-
-    def _build_cross_source_dedup_keys(self, row: CLSTelegraph) -> set[str]:
-        """
-        为单条资讯构造“跨平台去重 key 集合”。
-
-        设计思想：
-        - 不是只生成一个 key，而是生成一组 key
-        - 这样能处理：
-          1. 一边有标题、一边没标题
-          2. 一边正文里带标题、一边正文不带标题
-          3. 来源包装口径不同但本质是同一条消息
-
-        规则：
-        - 有有效标题时：加入 title key
-        - 同时始终加入 content key
-        - 如果标题存在，还会再生成一个“去掉标题前缀后的 content key”
-        """
-        keys = set()
-
-        title = (row.title or "").strip()
-        content = (row.content or "").strip()
-
-        if self._is_valid_dedup_title(title):
-            norm_title = self._normalize_dedup_text(title)
-            if norm_title:
-                keys.add(f"title::{norm_title}")
-
-        norm_content = self._normalize_dedup_text(content)
-        if len(norm_content) >= 12:
-            keys.add(f"content::{norm_content}")
-
-        if title:
-            stripped_content = self._strip_title_from_content(content, title)
-            norm_stripped_content = self._normalize_dedup_text(stripped_content)
-            if len(norm_stripped_content) >= 12:
-                keys.add(f"content::{norm_stripped_content}")
-
-        return keys
-
-    @staticmethod
-    def _build_duplicate_preference_score(row: CLSTelegraph) -> tuple:
-        """
-        当两条资讯被判定为重复时，决定保留哪一条。
-
-        当前偏好：
-        1. 正文更长的优先（信息量更大）
-        2. subjects 更多的优先
-        3. 有标题的优先
-        4. CLS 略微优先（因为你原始链路就是从 CLS 起家的）
-        5. publish_ts 更新的优先
-        """
-        return (
-            len((row.content or "").strip()),
-            len(row.subjects or []),
-            1 if (row.title or "").strip() else 0,
-            1 if row.source == "cls" else 0,
-            row.publish_ts or 0,
-        )
-
-    def _pick_better_duplicate_row(
-        self,
-        old_row: CLSTelegraph,
-        new_row: CLSTelegraph,
-    ) -> CLSTelegraph:
-        """
-        在两条重复资讯里挑一条更适合保留的。
-        """
-        old_score = self._build_duplicate_preference_score(old_row)
-        new_score = self._build_duplicate_preference_score(new_row)
-
-        return new_row if new_score > old_score else old_row
-
     def _dedup_rows_in_batch(self, rows: list[CLSTelegraph]) -> list[CLSTelegraph]:
         """
         对“本轮合并后的 CLS + Jin10 批次”做内容级去重。
@@ -428,40 +260,7 @@ class Application:
         - 如果重复，保留信息更完整的一条
         - 这样能拦住“同一轮里两个平台同时抓到同一条资讯”的情况
         """
-        if not rows:
-            return rows
-
-        deduped_rows: list[CLSTelegraph] = []
-        deduped_keys: list[set[str]] = []
-
-        for row in rows:
-            row_keys = self._build_cross_source_dedup_keys(row)
-
-            if not row_keys:
-                deduped_rows.append(row)
-                deduped_keys.append(set())
-                continue
-
-            matched_index = None
-            for idx, existing_keys in enumerate(deduped_keys):
-                if row_keys & existing_keys:
-                    matched_index = idx
-                    break
-
-            if matched_index is None:
-                deduped_rows.append(row)
-                deduped_keys.append(set(row_keys))
-                continue
-
-            kept_row = deduped_rows[matched_index]
-            better_row = self._pick_better_duplicate_row(kept_row, row)
-
-            deduped_rows[matched_index] = better_row
-            deduped_keys[matched_index] = deduped_keys[matched_index] | row_keys
-
-        deduped_rows.sort(key=lambda x: x.publish_ts or 0)
-
-        removed_count = len(rows) - len(deduped_rows)
+        deduped_rows, removed_count = self.telegraph_service.dedup_rows_in_batch(rows)
         if removed_count > 0:
             logger.info("batch cross-source dedup removed %s duplicate rows", removed_count)
 
@@ -796,30 +595,10 @@ class Application:
             logger.info("no cls telegraphs fetched")
             return []
 
-        batch = [row for row in batch if row.event_id and row.content]
-        if not batch:
+        rows = self.telegraph_service.filter_valid_incremental_rows(batch, latest_ts)
+        if not rows:
             logger.info("empty valid cls telegraph batch")
             return []
-
-        rows = []
-        seen_event_ids = set()
-
-        for row in batch:
-            event_id = row.event_id
-            if event_id in seen_event_ids:
-                continue
-            seen_event_ids.add(event_id)
-
-            row_ts = row.publish_ts or 0
-
-            # 保留“同秒数据”，只过滤更早的数据
-            # 同秒重复由后面的 event_id 去重兜底
-            if latest_ts is not None and row_ts < latest_ts:
-                continue
-
-            rows.append(row)
-
-        rows.sort(key=lambda x: x.publish_ts or 0)
         return rows
 
     async def fetch_new_jin10_telegraphs(
@@ -849,29 +628,10 @@ class Application:
             logger.info("no jin10 telegraphs fetched")
             return []
 
-        batch = [row for row in batch if row.event_id and row.content]
-        if not batch:
+        rows = self.telegraph_service.filter_valid_incremental_rows(batch, latest_ts)
+        if not rows:
             logger.info("empty valid jin10 telegraph batch")
             return []
-
-        rows = []
-        seen_event_ids = set()
-
-        for row in batch:
-            event_id = row.event_id
-            if event_id in seen_event_ids:
-                continue
-            seen_event_ids.add(event_id)
-
-            row_ts = row.publish_ts or 0
-
-            # 同样只过滤更早的数据，同秒重复交给 event_id 去重
-            if latest_ts is not None and row_ts < latest_ts:
-                continue
-
-            rows.append(row)
-
-        rows.sort(key=lambda x: x.publish_ts or 0)
         return rows
 
     async def fetch_new_10jqka_telegraphs(
@@ -894,29 +654,10 @@ class Application:
             logger.info("no 10jqka telegraphs fetched")
             return []
 
-        batch = [row for row in batch if row.event_id and row.content]
-        if not batch:
+        rows = self.telegraph_service.filter_valid_incremental_rows(batch, latest_ts)
+        if not rows:
             logger.info("empty valid 10jqka telegraph batch")
             return []
-
-        rows = []
-        seen_event_ids = set()
-
-        for row in batch:
-            event_id = row.event_id
-            if event_id in seen_event_ids:
-                continue
-            seen_event_ids.add(event_id)
-
-            row_ts = row.publish_ts or 0
-
-            # 同样只过滤更早的数据，同秒重复交给 event_id 去重
-            if latest_ts is not None and row_ts < latest_ts:
-                continue
-
-            rows.append(row)
-
-        rows.sort(key=lambda x: x.publish_ts or 0)
         return rows
 
     async def fetch_new_market_telegraphs(self) -> list[CLSTelegraph]:

@@ -1,3 +1,5 @@
-"""
-真正的主业务流程，应该放在这里
-"""
+"""业务流程与领域服务。"""
+
+from .telegraph_service import TelegraphService
+
+__all__ = ["TelegraphService"]
