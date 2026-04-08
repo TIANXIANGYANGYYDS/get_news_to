@@ -77,13 +77,49 @@ class DailyMarketAnalysisService:
         logger.info("daily test card sent")
 
     async def send_daily_market_analysis_card(self):
-        today_trade_date, prev_trade_date = self.get_a_share_trade_dates()
+        payload = await self.prepare_daily_analysis_payload()
+        morning_data = payload["morning_data"]
+        analysis_date = payload["analysis_date"]
+        today_trade_date = payload["trade_date"]
+        prev_trade_date = payload["prev_trade_date"]
+        prev_day_review = payload["prev_day_review"]
 
+        logger.info("start llm analysis for morning market data")
+        analysis_text = await asyncio.to_thread(
+            self.generate_analysis_text,
+            payload,
+        )
+        if not analysis_text:
+            logger.warning("analysis_text is empty")
+            return
+        logger.info("llm analysis finished, analysis_len=%s", len(analysis_text))
+
+        if self.daily_market_analysis_repository is not None:
+            doc = self.build_daily_market_analysis_doc(
+                analysis_date=analysis_date,
+                trade_date=today_trade_date,
+                prev_trade_date=prev_trade_date,
+                morning_data=morning_data,
+                prev_day_review=prev_day_review,
+                analysis_text=analysis_text,
+            )
+            await self.daily_market_analysis_repository.upsert_one(doc)
+
+        card = self.card_builder.build_daily_market_analysis_card(
+            date=analysis_date,
+            analysis_text=analysis_text,
+            morning_data=morning_data,
+        )
+        await self.notifier.send_card(card)
+        logger.info("daily market analysis card sent")
+
+    async def prepare_daily_analysis_payload(self) -> dict:
+        today_trade_date, prev_trade_date = self.get_a_share_trade_dates()
         logger.info("start fetching morning market data")
         morning_data = fetch_and_split_morning_data(today_trade_date)
         if not morning_data:
             logger.warning("morning_data is empty")
-            return
+            raise ValueError("business validation failed: morning_data is empty")
 
         logger.info(
             "morning data fetched successfully, date=%s, raw_content_len=%s",
@@ -132,45 +168,23 @@ class DailyMarketAnalysisService:
         else:
             logger.warning("sector_market_heat_ranking_repository is not initialized")
 
-        logger.info("start llm analysis for morning market data")
-        analysis_text = await asyncio.to_thread(
-            analyze_morning_data,
-            morning_data,
-            prev_day_review,
-            investment_preference_ranking,
-            market_heat_ranking,
-        )
+        return {
+            "analysis_date": analysis_date,
+            "trade_date": today_trade_date,
+            "prev_trade_date": prev_trade_date,
+            "morning_data": morning_data,
+            "prev_day_review": prev_day_review,
+            "investment_preference_ranking": investment_preference_ranking,
+            "market_heat_ranking": market_heat_ranking,
+        }
 
+    def generate_analysis_text(self, payload: dict) -> str:
+        analysis_text = analyze_morning_data(
+            payload["morning_data"],
+            payload["prev_day_review"],
+            payload.get("investment_preference_ranking"),
+            payload.get("market_heat_ranking"),
+        )
         if not analysis_text:
-            logger.warning("analysis_text is empty")
-            return
-
-        logger.info("llm analysis finished, analysis_len=%s", len(analysis_text))
-
-        if self.daily_market_analysis_repository is not None:
-            doc = self.build_daily_market_analysis_doc(
-                analysis_date=analysis_date,
-                trade_date=today_trade_date,
-                prev_trade_date=prev_trade_date,
-                morning_data=morning_data,
-                prev_day_review=prev_day_review,
-                analysis_text=analysis_text,
-            )
-
-            update_result = await self.daily_market_analysis_repository.upsert_one(doc)
-            is_new_insert = bool(getattr(update_result, "upserted_id", None))
-            logger.info(
-                "daily market analysis saved successfully, analysis_date=%s, action=%s",
-                analysis_date,
-                "insert" if is_new_insert else "update",
-            )
-        else:
-            logger.warning("daily_market_analysis_repository is not initialized")
-
-        card = self.card_builder.build_daily_market_analysis_card(
-            date=analysis_date,
-            analysis_text=analysis_text,
-            morning_data=morning_data,
-        )
-        await self.notifier.send_card(card)
-        logger.info("daily market analysis card sent")
+            raise ValueError("business validation failed: analysis_text is empty")
+        return analysis_text

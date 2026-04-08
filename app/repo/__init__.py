@@ -6,6 +6,7 @@
 from .cls_telegraph import CLSTelegraphRepository
 from .sector_3d_daily_summary_repository import Sector3DDailySummaryRepository
 from .daily_market_analysis import DailyMarketAnalysisRepository
+from .daily_analysis_task_repository import DailyAnalysisTaskRepository
 from .sector_investment_preference_ranking_repository import SectorInvestmentPreferenceRankingRepository
 from .sector_market_heat_ranking_repository import SectorMarketHeatRankingRepository
 
@@ -13,6 +14,7 @@ __all__ = [
     "CLSTelegraphRepository",
     "Sector3DDailySummaryRepository",
     "DailyMarketAnalysisRepository",
+    "DailyAnalysisTaskRepository",
     "SectorInvestmentPreferenceRankingRepository",
     "SectorMarketHeatRankingRepository",
 ]
