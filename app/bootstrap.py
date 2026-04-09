@@ -267,6 +267,7 @@ class Application:
                     "reason": "电报内容为空，未执行有效分析。",
                     "companies": None,
                     "sectors": None,
+                    "sector_scores": None,
                 },
                 False,
             )
@@ -300,6 +301,7 @@ class Application:
                     "reason": f"LLM分析失败，按中性兜底入库。错误信息：{str(e)}",
                     "companies": None,
                     "sectors": None,
+                    "sector_scores": None,
                 },
                 False,
             )

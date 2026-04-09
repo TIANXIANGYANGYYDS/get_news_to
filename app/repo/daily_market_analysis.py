@@ -1,6 +1,8 @@
 from datetime import datetime
 from pymongo.results import UpdateResult
 
+from app.model import DailyMarketAnalysisDoc
+
 
 class DailyMarketAnalysisRepository:
     collection_name = "daily_market_analysis"
@@ -23,20 +25,24 @@ class DailyMarketAnalysisRepository:
             name="idx_updated_at",
         )
 
-    async def upsert_one(self, data: dict) -> UpdateResult:
+    async def upsert_one(self, data: DailyMarketAnalysisDoc | dict) -> UpdateResult:
         """
         按 analysis_date 唯一更新/插入。
         同一天只保留一条记录：
         - 第一次分析：插入
         - 重启服务后再次分析：更新当天记录
         """
-        analysis_date = (data.get("analysis_date") or "").strip()
+        if isinstance(data, DailyMarketAnalysisDoc):
+            payload = data.model_dump()
+        else:
+            payload = DailyMarketAnalysisDoc.model_validate(data).model_dump()
+
+        analysis_date = (payload.get("analysis_date") or "").strip()
         if not analysis_date:
             raise ValueError("analysis_date is required")
 
         now = datetime.utcnow()
 
-        payload = dict(data)
         payload["updated_at"] = now
 
         return await self.collection.update_one(

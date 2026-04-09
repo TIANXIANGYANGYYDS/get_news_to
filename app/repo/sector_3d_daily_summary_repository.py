@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from pymongo.results import UpdateResult
 
+from app.model import Sector3DDailySummaryDoc
 
 class Sector3DDailySummaryRepository:
     """
@@ -34,13 +35,18 @@ class Sector3DDailySummaryRepository:
     async def get_by_biz_date(self, biz_date: str) -> dict | None:
         return await self.target_collection.find_one({"biz_date": biz_date})
 
-    async def upsert_one(self, data: dict) -> UpdateResult:
+    async def upsert_one(self, data: Sector3DDailySummaryDoc | dict) -> UpdateResult:
+        if isinstance(data, Sector3DDailySummaryDoc):
+            payload = data.model_dump()
+        else:
+            payload = Sector3DDailySummaryDoc.model_validate(data).model_dump()
+
         now_ts = int(datetime.utcnow().timestamp())
         return await self.target_collection.update_one(
-            {"biz_date": data["biz_date"]},
+            {"biz_date": payload["biz_date"]},
             {
                 "$set": {
-                    **data,
+                    **payload,
                     "updated_at_ts": now_ts,
                 },
                 "$setOnInsert": {

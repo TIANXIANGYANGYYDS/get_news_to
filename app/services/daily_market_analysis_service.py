@@ -9,6 +9,7 @@ from app.crawlers.Get_Morning_Reading import fetch_and_split_morning_data
 from app.crawlers.Get_fupan import fetch_fupan_full_visible_text, build_fupan_url
 from app.llm.Moring_Reading_llm import analyze_morning_data
 from app.logger import get_logger
+from app.model import DailyMarketAnalysisDoc
 
 logger = get_logger("daily_market_analysis_service")
 XSHG = xcals.get_calendar("XSHG")
@@ -60,16 +61,16 @@ class DailyMarketAnalysisService:
         morning_data: dict,
         prev_day_review: str,
         analysis_text: str,
-    ) -> dict:
-        return {
-            "analysis_date": analysis_date,
-            "trade_date": trade_date,
-            "prev_trade_date": prev_trade_date,
-            "source": morning_data.get("source"),
-            "morning_data": morning_data,
-            "prev_day_review": prev_day_review,
-            "analysis_text": analysis_text,
-        }
+    ) -> DailyMarketAnalysisDoc:
+        return DailyMarketAnalysisDoc(
+            analysis_date=analysis_date,
+            trade_date=trade_date,
+            prev_trade_date=prev_trade_date,
+            source=morning_data.get("source"),
+            morning_data=morning_data,
+            prev_day_review=prev_day_review,
+            analysis_text=analysis_text,
+        )
 
     async def send_daily_test_card(self):
         card = self.card_builder.build_daily_test_card()
