@@ -113,14 +113,13 @@ class SectorInvestmentPreferenceRankingRepository:
         从 cls_telegraphs 取窗口内新闻明细，保留：
         - event_id
         - publish_ts
-        - llm_analysis.score
-        - llm_analysis.sectors
+        - llm_analysis.sector_analyses
 
         规则：
         1. 统计 publish_ts 落在 [start_ts, end_ts] 内的数据
         2. 一条新闻命中多个版块，则分别参与对应版块计算
-        3. 同一条新闻内部若 sectors 重复，先去重
-        4. sectors 为空/null/非数组，则忽略
+        3. 同一条新闻内部若 sector 重复，先去重
+        4. sector_analyses 为空/null/非数组，则忽略
         """
         cursor = self.source_collection.find(
             {
@@ -133,8 +132,9 @@ class SectorInvestmentPreferenceRankingRepository:
                 "_id": 0,
                 "event_id": 1,
                 "publish_ts": 1,
-                "llm_analysis.score": 1,
-                "llm_analysis.sectors": 1,
+                "llm_analysis.sector_analyses": 1,
+                "llm_analysis.score": 1,  # 兼容历史数据
+                "llm_analysis.sectors": 1,  # 兼容历史数据
             },
         )
 
@@ -147,18 +147,15 @@ class SectorInvestmentPreferenceRankingRepository:
                 continue
 
             llm_analysis = doc.get("llm_analysis") or {}
-            score = self._clamp_score(self._safe_float(llm_analysis.get("score", 0.0)))
-            sectors = self._normalize_sectors(llm_analysis.get("sectors"))
-
-            if not sectors:
+            sector_scores = self._normalize_sector_scores(llm_analysis)
+            if not sector_scores:
                 continue
 
             rows.append(
                 {
                     "event_id": doc.get("event_id"),
                     "publish_ts": publish_ts,
-                    "score": score,
-                    "sectors": sectors,
+                    "sector_scores": sector_scores,
                 }
             )
 
@@ -173,23 +170,23 @@ class SectorInvestmentPreferenceRankingRepository:
 
         for row in rows:
             publish_ts = int(row["publish_ts"])
-            score = float(row["score"])
-            age_hours = max((now_ts - publish_ts) / 3600.0, 0.0)
-            score_strength = self._score_strength(score)
-            time_decay = self._time_decay(score=score, age_hours=age_hours)
-            news_effective_strength = score_strength * time_decay
+            for sector_item in row["sector_scores"]:
+                score = float(sector_item["score"])
+                age_hours = max((now_ts - publish_ts) / 3600.0, 0.0)
+                score_strength = self._score_strength(score)
+                time_decay = self._time_decay(score=score, age_hours=age_hours)
+                news_effective_strength = score_strength * time_decay
 
-            news_fact = {
-                "event_id": row.get("event_id"),
-                "publish_ts": publish_ts,
-                "score": score,
-                "age_hours": age_hours,
-                "score_strength": score_strength,
-                "time_decay": time_decay,
-                "news_effective_strength": news_effective_strength,
-            }
-
-            for sector in row["sectors"]:
+                news_fact = {
+                    "event_id": row.get("event_id"),
+                    "publish_ts": publish_ts,
+                    "score": score,
+                    "age_hours": age_hours,
+                    "score_strength": score_strength,
+                    "time_decay": time_decay,
+                    "news_effective_strength": news_effective_strength,
+                }
+                sector = sector_item["sector"]
                 sector_news_map.setdefault(sector, []).append(news_fact)
 
         rankings = [
@@ -315,19 +312,37 @@ class SectorInvestmentPreferenceRankingRepository:
         half_life_hours = 18.0 + 18.0 * ((abs(score) / 100.0) ** 1.5)
         return exp(-log(2.0) * effective_age_hours / half_life_hours)
 
-    @staticmethod
-    def _normalize_sectors(sectors: Any) -> list[str]:
-        if not isinstance(sectors, list):
+    def _normalize_sector_scores(self, llm_analysis: dict[str, Any]) -> list[dict[str, float]]:
+        sector_analyses = llm_analysis.get("sector_analyses")
+        seen = set()
+        result: list[dict[str, float]] = []
+
+        if isinstance(sector_analyses, list):
+            for item in sector_analyses:
+                if not isinstance(item, dict):
+                    continue
+                sector = str(item.get("sector") or "").strip()
+                if not sector or sector in seen:
+                    continue
+                seen.add(sector)
+                score = self._clamp_score(self._safe_float(item.get("score", 0.0)))
+                result.append({"sector": sector, "score": score})
+
+        # 历史兼容：老结构 llm_analysis.score + llm_analysis.sectors
+        if result:
+            return result
+
+        legacy_score = self._clamp_score(self._safe_float(llm_analysis.get("score", 0.0)))
+        legacy_sectors = llm_analysis.get("sectors")
+        if not isinstance(legacy_sectors, list):
             return []
 
-        seen = set()
-        result: list[str] = []
-        for item in sectors:
-            text = str(item).strip() if item is not None else ""
-            if not text or text in seen:
+        for item in legacy_sectors:
+            sector = str(item).strip() if item is not None else ""
+            if not sector or sector in seen:
                 continue
-            seen.add(text)
-            result.append(text)
+            seen.add(sector)
+            result.append({"sector": sector, "score": legacy_score})
         return result
 
     @staticmethod

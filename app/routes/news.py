@@ -23,10 +23,7 @@ async def get_latest_news(limit: int = Query(20, ge=1, le=100)) -> dict[str, Any
                 "content": 1,
                 "publish_ts": 1,
                 "subjects": 1,
-                "llm_analysis.score": 1,
-                "llm_analysis.reason": 1,
-                "llm_analysis.sectors": 1,
-                "llm_analysis.companies": 1,
+                "llm_analysis.sector_analyses": 1,
             },
         )
         .sort("publish_ts", DESCENDING)

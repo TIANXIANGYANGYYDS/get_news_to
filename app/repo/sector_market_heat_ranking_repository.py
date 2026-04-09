@@ -114,13 +114,13 @@ class SectorMarketHeatRankingRepository:
         从 cls_telegraphs 取窗口内新闻明细，保留：
         - event_id
         - publish_ts
-        - llm_analysis.sectors
+        - llm_analysis.sector_analyses
 
         规则：
         1. 统计 publish_ts 落在 [start_ts, end_ts] 内的数据
         2. 一条新闻命中多个版块，则分别参与对应版块计算
-        3. 同一条新闻内部若 sectors 重复，先去重
-        4. sectors 为空/null/非数组，则忽略
+        3. 同一条新闻内部若 sector 重复，先去重
+        4. sector_analyses 为空/null/非数组，则忽略
         """
         cursor = self.source_collection.find(
             {
@@ -133,7 +133,8 @@ class SectorMarketHeatRankingRepository:
                 "_id": 0,
                 "event_id": 1,
                 "publish_ts": 1,
-                "llm_analysis.sectors": 1,
+                "llm_analysis.sector_analyses": 1,
+                "llm_analysis.sectors": 1,  # 历史兼容
             },
         )
 
@@ -146,7 +147,7 @@ class SectorMarketHeatRankingRepository:
                 continue
 
             llm_analysis = doc.get("llm_analysis") or {}
-            sectors = self._normalize_sectors(llm_analysis.get("sectors"))
+            sectors = self._normalize_sectors(llm_analysis)
 
             if not sectors:
                 continue
@@ -257,13 +258,23 @@ class SectorMarketHeatRankingRepository:
         return exp(-log(2.0) * effective_age_hours / half_life_hours)
 
     @staticmethod
-    def _normalize_sectors(sectors: Any) -> list[str]:
-        if not isinstance(sectors, list):
-            return []
+    def _normalize_sectors(llm_analysis: dict[str, Any]) -> list[str]:
+        sector_analyses = llm_analysis.get("sector_analyses")
+        raw_sectors: list[Any] = []
+        if isinstance(sector_analyses, list):
+            for item in sector_analyses:
+                if isinstance(item, dict):
+                    raw_sectors.append(item.get("sector"))
+
+        # 历史兼容
+        if not raw_sectors:
+            legacy_sectors = llm_analysis.get("sectors")
+            if isinstance(legacy_sectors, list):
+                raw_sectors = legacy_sectors
 
         seen = set()
         result: list[str] = []
-        for item in sectors:
+        for item in raw_sectors:
             text = str(item).strip() if item is not None else ""
             if not text or text in seen:
                 continue
