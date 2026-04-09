@@ -1,3 +1,95 @@
 .env
 .env.*
 .DS_Store
+# =========================
+# Python bytecode / cache
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# C extensions / build
+# =========================
+*.so
+*.dylib
+*.dll
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+venv/
+env/
+ENV/
+
+# =========================
+# Environment variables
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+*.out
+*.err
+
+# =========================
+# Test / coverage / cache
+# =========================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# =========================
+# Jupyter / notebooks
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# IDE / editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Local databases / temp files
+# =========================
+*.sqlite3
+*.db
+tmp/
+temp/
+
+# =========================
+# Project-specific optional ignores
+# =========================
+# model artifacts
+*.onnx
+
+# local upload / download / generated assets
+downloads/
+uploads/
