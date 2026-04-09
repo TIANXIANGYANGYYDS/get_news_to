@@ -6,7 +6,7 @@ from typing import Optional, List, Any
 from openai import OpenAI
 from pydantic import ValidationError
 
-from app.model import CLSTelegraphLLMAnalysis
+from app.model import CLSTelegraphLLMAnalysis, SectorScore
 from app.config import settings
 
 
@@ -386,11 +386,30 @@ def _coerce_payload_shape(payload: dict) -> CLSTelegraphLLMAnalysis:
     if not isinstance(payload, dict):
         raise ValueError(f"LLM payload is not a dict: {type(payload)}")
 
+    raw_sector_scores = payload.get("sector_scores")
+    normalized_sector_scores = None
+    if isinstance(raw_sector_scores, list):
+        parsed_items = []
+        for item in raw_sector_scores:
+            if not isinstance(item, dict):
+                continue
+            sector = _clean_text(item.get("sector"))
+            if not sector:
+                continue
+            parsed_items.append(
+                SectorScore(
+                    sector=sector,
+                    score=_coerce_int(item.get("score"), default=_coerce_int(payload.get("score"), default=0)),
+                )
+            )
+        normalized_sector_scores = parsed_items or None
+
     return CLSTelegraphLLMAnalysis(
         score=_coerce_int(payload.get("score"), default=0),
         reason=_clean_text(payload.get("reason")) or "未返回有效分析理由。",
         companies=_coerce_optional_list(payload.get("companies")),
         sectors=_coerce_optional_list(payload.get("sectors")),
+        sector_scores=normalized_sector_scores,
     )
 
 
@@ -598,11 +617,30 @@ def _post_process_payload(
         if direction != 0:
             score = direction * (35 if _is_strong_event(content) else 15)
 
+    sector_scores = None
+    if sectors:
+        payload_sector_scores = payload.sector_scores or []
+        score_map = {}
+        for item in payload_sector_scores:
+            normalized_name = _normalize_sector_name(item.sector)
+            if not normalized_name:
+                continue
+            score_map[normalized_name] = max(-100, min(100, _coerce_int(item.score, score)))
+
+        sector_scores = [
+            SectorScore(
+                sector=sector,
+                score=score_map.get(sector, score),
+            )
+            for sector in sectors
+        ]
+
     return CLSTelegraphLLMAnalysis(
         score=max(-100, min(100, int(score))),
         reason=reason,
         companies=companies,
         sectors=sectors,
+        sector_scores=sector_scores,
     )
 
 
@@ -645,11 +683,28 @@ def _normalize_analysis_for_output(analysis: CLSTelegraphLLMAnalysis) -> CLSTele
 
         return result or None
 
+    cleaned_sector_scores = None
+    if analysis.sector_scores:
+        cleaned_sector_scores = []
+        seen_sector = set()
+        for item in analysis.sector_scores:
+            sector = (item.sector or "").strip()
+            if not sector or sector in seen_sector:
+                continue
+            seen_sector.add(sector)
+            cleaned_sector_scores.append(
+                SectorScore(
+                    sector=sector,
+                    score=max(-100, min(100, int(item.score))),
+                )
+            )
+
     return CLSTelegraphLLMAnalysis(
         score=int(analysis.score),
         reason=(analysis.reason or "").strip() or "未返回有效分析理由。",
         companies=clean_list(analysis.companies),
         sectors=clean_list(analysis.sectors),
+        sector_scores=cleaned_sector_scores,
     )
 
 def analyze_cls_telegraph(content: str, subjects: Optional[list[str]] = None) -> CLSTelegraphLLMAnalysis:
@@ -662,6 +717,7 @@ def analyze_cls_telegraph(content: str, subjects: Optional[list[str]] = None) ->
             reason="电报内容为空，未执行有效分析。",
             companies=None,
             sectors=None,
+            sector_scores=None,
         )
 
     client = _build_client()

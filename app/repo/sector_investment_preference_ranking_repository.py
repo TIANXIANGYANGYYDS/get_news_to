@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from pymongo.results import UpdateResult
 
+from app.model import SectorInvestmentPreferenceRankingDoc
 
 class SectorInvestmentPreferenceRankingRepository:
     """
@@ -40,13 +41,18 @@ class SectorInvestmentPreferenceRankingRepository:
     async def get_by_biz_date(self, biz_date: str) -> dict | None:
         return await self.target_collection.find_one({"biz_date": biz_date})
 
-    async def upsert_one(self, data: dict) -> UpdateResult:
+    async def upsert_one(self, data: SectorInvestmentPreferenceRankingDoc | dict) -> UpdateResult:
+        if isinstance(data, SectorInvestmentPreferenceRankingDoc):
+            payload = data.model_dump()
+        else:
+            payload = SectorInvestmentPreferenceRankingDoc.model_validate(data).model_dump()
+
         now_ts = int(datetime.utcnow().timestamp())
         return await self.target_collection.update_one(
-            {"biz_date": data["biz_date"]},
+            {"biz_date": payload["biz_date"]},
             {
                 "$set": {
-                    **data,
+                    **payload,
                     "updated_at_ts": now_ts,
                 },
                 "$setOnInsert": {
@@ -113,14 +119,13 @@ class SectorInvestmentPreferenceRankingRepository:
         从 cls_telegraphs 取窗口内新闻明细，保留：
         - event_id
         - publish_ts
-        - llm_analysis.score
-        - llm_analysis.sectors
+        - llm_analysis.sector_scores
 
         规则：
         1. 统计 publish_ts 落在 [start_ts, end_ts] 内的数据
-        2. 一条新闻命中多个版块，则分别参与对应版块计算
-        3. 同一条新闻内部若 sectors 重复，先去重
-        4. sectors 为空/null/非数组，则忽略
+        2. 一条新闻命中多个版块，按 sector_scores 中每个版块自己的 score 参与计算
+        3. 同一条新闻内部若 sector_scores 版块重复，保留首次出现
+        4. sector_scores 为空/null/非数组，则忽略
         """
         cursor = self.source_collection.find(
             {
@@ -133,8 +138,7 @@ class SectorInvestmentPreferenceRankingRepository:
                 "_id": 0,
                 "event_id": 1,
                 "publish_ts": 1,
-                "llm_analysis.score": 1,
-                "llm_analysis.sectors": 1,
+                "llm_analysis.sector_scores": 1,
             },
         )
 
@@ -147,20 +151,20 @@ class SectorInvestmentPreferenceRankingRepository:
                 continue
 
             llm_analysis = doc.get("llm_analysis") or {}
-            score = self._clamp_score(self._safe_float(llm_analysis.get("score", 0.0)))
-            sectors = self._normalize_sectors(llm_analysis.get("sectors"))
+            sector_scores = self._normalize_sector_scores(llm_analysis.get("sector_scores"))
 
-            if not sectors:
+            if not sector_scores:
                 continue
 
-            rows.append(
-                {
-                    "event_id": doc.get("event_id"),
-                    "publish_ts": publish_ts,
-                    "score": score,
-                    "sectors": sectors,
-                }
-            )
+            for item in sector_scores:
+                rows.append(
+                    {
+                        "event_id": doc.get("event_id"),
+                        "publish_ts": publish_ts,
+                        "score": self._clamp_score(self._safe_float(item.get("score"), 0.0)),
+                        "sector": item.get("sector"),
+                    }
+                )
 
         return rows
 
@@ -189,8 +193,10 @@ class SectorInvestmentPreferenceRankingRepository:
                 "news_effective_strength": news_effective_strength,
             }
 
-            for sector in row["sectors"]:
-                sector_news_map.setdefault(sector, []).append(news_fact)
+            sector = str(row.get("sector") or "").strip()
+            if not sector:
+                continue
+            sector_news_map.setdefault(sector, []).append(news_fact)
 
         rankings = [
             self._build_single_sector_ranking(sector=sector, news_items=news_items)
@@ -328,6 +334,24 @@ class SectorInvestmentPreferenceRankingRepository:
                 continue
             seen.add(text)
             result.append(text)
+        return result
+
+    def _normalize_sector_scores(self, sector_scores: Any) -> list[dict[str, Any]]:
+        if not isinstance(sector_scores, list):
+            return []
+
+        result: list[dict[str, Any]] = []
+        seen = set()
+        for item in sector_scores:
+            if not isinstance(item, dict):
+                continue
+            sector = str(item.get("sector") or "").strip()
+            if not sector or sector in seen:
+                continue
+            seen.add(sector)
+            score = self._clamp_score(self._safe_float(item.get("score"), 0.0))
+            result.append({"sector": sector, "score": score})
+
         return result
 
     @staticmethod
