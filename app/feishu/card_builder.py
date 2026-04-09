@@ -1,6 +1,6 @@
 from typing import Any, Iterable, Optional
 
-from app.model import CLSTelegraph, CLSTelegraphLLMAnalysis
+from app.model import CLSTelegraph
 
 
 class CardBuilder:
@@ -79,6 +79,29 @@ class CardBuilder:
         if not items:
             return "None"
         return "、".join([str(x).strip() for x in items if str(x).strip()]) or "None"
+
+    def _format_sector_analyses_md(self, sector_analyses: Any) -> str:
+        if not isinstance(sector_analyses, list) or not sector_analyses:
+            return "无明确板块影响"
+
+        lines: list[str] = []
+        for idx, item in enumerate(sector_analyses, start=1):
+            sector = self._escape_lark_md(str(self._safe_get(item, "sector", "") or "").strip())
+            if not sector:
+                continue
+
+            score = int(self._safe_get(item, "score", 0) or 0)
+            reason = self._escape_lark_md(self._safe_get(item, "reason", "-") or "-")
+            companies = self._escape_lark_md(
+                self._join_list(self._safe_get(item, "companies", None))
+            )
+            lines.append(
+                f"{idx}. **{sector}**：{score}\n"
+                f"   理由：{reason}\n"
+                f"   公司：{companies}"
+            )
+
+        return "\n".join(lines) if lines else "无明确板块影响"
 
     @staticmethod
     def _safe_get(obj: Any, key: str, default=None):
@@ -193,15 +216,16 @@ class CardBuilder:
         heat_top5: Optional[Iterable[Any]] = None,
     ) -> dict:
         llm_analysis = self._safe_get(row, "llm_analysis", None) or {}
+        sector_analyses = self._safe_get(llm_analysis, "sector_analyses", None)
 
-        score = int(self._safe_get(llm_analysis, "score", 0) or 0)
-        reason = self._escape_lark_md(self._safe_get(llm_analysis, "reason", "-") or "-")
-        companies = self._escape_lark_md(
-            self._join_list(self._safe_get(llm_analysis, "companies", None))
-        )
-        sectors = self._escape_lark_md(
-            self._join_list(self._safe_get(llm_analysis, "sectors", None))
-        )
+        scores = []
+        if isinstance(sector_analyses, list):
+            for item in sector_analyses:
+                raw_score = self._safe_get(item, "score", None)
+                if raw_score is not None:
+                    scores.append(int(raw_score))
+        score = max(scores, key=lambda value: abs(value)) if scores else 0
+        sector_analyses_md = self._format_sector_analyses_md(sector_analyses)
         subjects = self._escape_lark_md(
             self._join_list(self._safe_get(row, "subjects", None))
         )
@@ -259,17 +283,8 @@ class CardBuilder:
                 "text": {
                     "tag": "lark_md",
                     "content": (
-                        f"**LLM分数**：{score}\n"
-                        f"**涉及公司**：{companies}\n"
-                        f"**涉及板块**：{sectors}"
+                        f"**板块逐项分析**\n{sector_analyses_md}"
                     ),
-                },
-            },
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"**分析理由**：{reason}",
                 },
             },
             # 如需展示原文，把下面打开

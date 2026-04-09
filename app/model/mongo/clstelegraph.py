@@ -2,11 +2,21 @@ from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
 
 
+class CLSTelegraphSectorAnalysis(BaseModel):
+    sector: str = Field(..., min_length=1, description="行业板块名称")
+    score: int = Field(..., ge=-100, le=100, description="该行业板块的利好利空分数，范围 -100~100")
+    reason: str = Field(..., min_length=1, description="该行业板块的分析理由")
+    companies: Optional[List[str]] = Field(
+        default=None,
+        description="该行业板块下涉及的公司，没有则为None",
+    )
+
+
 class CLSTelegraphLLMAnalysis(BaseModel):
-    score: int = Field(..., ge=-100, le=100, description="利好利空分数，范围 -100~100")
-    reason: str = Field(..., min_length=1, description="分析理由")
-    companies: Optional[List[str]] = Field(default=None, description="涉及公司，没有则为None")
-    sectors: Optional[List[str]] = Field(default=None, description="涉及板块，没有则为None")
+    sector_analyses: Optional[List[CLSTelegraphSectorAnalysis]] = Field(
+        default=None,
+        description="逐行业板块分析结果，没有则为None",
+    )
 
 class CLSTelegraph(BaseModel):
     __tablename__ = "cls_telegraphs"

@@ -263,10 +263,7 @@ class Application:
         if not content:
             return (
                 {
-                    "score": 0,
-                    "reason": "电报内容为空，未执行有效分析。",
-                    "companies": None,
-                    "sectors": None,
+                    "sector_analyses": None,
                 },
                 False,
             )
@@ -279,10 +276,10 @@ class Application:
             )
 
             logger.info(
-                "telegraph llm analyzed successfully, source=%s, event_id=%s, score=%s",
+                "telegraph llm analyzed successfully, source=%s, event_id=%s, sector_count=%s",
                 row.source,
                 row.event_id,
-                analysis.score,
+                len(analysis.sector_analyses or []),
             )
             return analysis, True
 
@@ -296,10 +293,7 @@ class Application:
 
             return (
                 {
-                    "score": 0,
-                    "reason": f"LLM分析失败，按中性兜底入库。错误信息：{str(e)}",
-                    "companies": None,
-                    "sectors": None,
+                    "sector_analyses": None,
                 },
                 False,
             )

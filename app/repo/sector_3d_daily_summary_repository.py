@@ -90,75 +90,88 @@ class Sector3DDailySummaryRepository:
 
         规则：
         1. 统计 publish_ts 落在 [start_ts, end_ts] 内的数据
-        2. 版块来源字段：llm_analysis.sectors
-        3. 分数字段：llm_analysis.score
+        2. 版块来源字段：llm_analysis.sector_analyses[].sector
+        3. 分数字段：llm_analysis.sector_analyses[].score
         4. 一条新闻命中多个版块，则每个版块各记 1 次
-        5. 同一条新闻内部若 sectors 重复，先去重
-        6. sectors 为空/null/非数组，则忽略
+        5. 同一条新闻内部若 sector 重复，先去重
+        6. sector_analyses 为空/null/非数组，则忽略
         """
+        cursor = self.source_collection.find(
+            {
+                "publish_ts": {
+                    "$gte": start_ts,
+                    "$lte": end_ts,
+                }
+            },
+            projection={
+                "_id": 0,
+                "llm_analysis.sector_analyses": 1,
+                "llm_analysis.score": 1,   # 历史兼容
+                "llm_analysis.sectors": 1,  # 历史兼容
+            },
+        )
 
-        pipeline = [
-            {
-                "$match": {
-                    "publish_ts": {
-                        "$gte": start_ts,
-                        "$lte": end_ts,
-                    }
-                }
-            },
-            {
-                "$project": {
-                    "score": {"$ifNull": ["$llm_analysis.score", 0]},
-                    "sectors": {
-                        "$cond": [
-                            {"$isArray": "$llm_analysis.sectors"},
-                            {"$setUnion": ["$llm_analysis.sectors", []]},
-                            [],
-                        ]
-                    },
-                }
-            },
-            {"$unwind": "$sectors"},
-            {
-                "$project": {
-                    "score": 1,
-                    "sector": {
-                        "$trim": {
-                            "input": {"$ifNull": ["$sectors", ""]}
-                        }
-                    },
-                }
-            },
-            {
-                "$match": {
-                    "sector": {"$ne": ""}
-                }
-            },
-            {
-                "$group": {
-                    "_id": "$sector",
-                    "news_count": {"$sum": 1},
-                    "score_sum": {"$sum": "$score"},
-                }
-            },
-            {
-                "$project": {
-                    "_id": 0,
-                    "sector": "$_id",
-                    "news_count": 1,
-                    "score_sum": 1,
-                }
-            },
-            {
-                "$sort": {
-                    "news_count": -1,
-                    "score_sum": -1,
-                    "sector": 1,
-                }
-            },
-        ]
+        docs = await cursor.to_list(length=None)
+        stats_map: dict[str, dict[str, Any]] = {}
 
-        return await self.source_collection.aggregate(pipeline).to_list(length=None)
+        for doc in docs:
+            llm_analysis = doc.get("llm_analysis") or {}
+            normalized_items = self._normalize_sector_items(llm_analysis)
+            for item in normalized_items:
+                sector = item["sector"]
+                score = item["score"]
+                if sector not in stats_map:
+                    stats_map[sector] = {"sector": sector, "news_count": 0, "score_sum": 0.0}
+                stats_map[sector]["news_count"] += 1
+                stats_map[sector]["score_sum"] += score
+
+        result = list(stats_map.values())
+        result.sort(key=lambda x: (-x["news_count"], -x["score_sum"], x["sector"]))
+        return result
+
+    @staticmethod
+    def _normalize_sector_items(llm_analysis: dict[str, Any]) -> list[dict[str, Any]]:
+        seen = set()
+        result: list[dict[str, Any]] = []
+
+        sector_analyses = llm_analysis.get("sector_analyses")
+        if isinstance(sector_analyses, list):
+            for item in sector_analyses:
+                if not isinstance(item, dict):
+                    continue
+                sector = str(item.get("sector") or "").strip()
+                if not sector or sector in seen:
+                    continue
+                seen.add(sector)
+                score = item.get("score", 0)
+                try:
+                    score = float(score)
+                except (TypeError, ValueError):
+                    score = 0.0
+                result.append({"sector": sector, "score": score})
+
+        # 历史兼容
+        if result:
+            return result
+
+        legacy_score = llm_analysis.get("score", 0)
+        try:
+            legacy_score = float(legacy_score)
+        except (TypeError, ValueError):
+            legacy_score = 0.0
+
+        legacy_sectors = llm_analysis.get("sectors")
+        if not isinstance(legacy_sectors, list):
+            return []
+
+        for item in legacy_sectors:
+            sector = str(item).strip() if item is not None else ""
+            if not sector or sector in seen:
+                continue
+            seen.add(sector)
+            result.append({"sector": sector, "score": legacy_score})
+
+        return result
 
     def _now_ts(self) -> int:
         return int(datetime.now(ZoneInfo(self.timezone)).timestamp())
