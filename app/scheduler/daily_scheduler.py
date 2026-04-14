@@ -12,11 +12,29 @@ logger = get_logger("scheduler.daily")
 
 
 class DailyScheduler:
-    def __init__(self, hour: int, minute: int, timezone: str, task_callable):
+    """
+    通用每日定时调度器
+
+    用途：
+    - 每天固定时刻执行一次异步任务
+    - 支持多个实例并存
+    - 支持不同 task_name，便于日志和 asyncio task 排查
+    """
+
+    def __init__(
+        self,
+        hour: int,
+        minute: int,
+        timezone: str,
+        task_callable,
+        task_name: str = "daily-scheduler",
+    ):
         self.hour = hour
         self.minute = minute
         self.timezone = timezone
         self.task_callable = task_callable
+        self.task_name = task_name
+
         self._task: asyncio.Task | None = None
         self._next_run_time: datetime | None = None
 
@@ -52,12 +70,14 @@ class DailyScheduler:
 
     async def startup(self):
         if self.is_running:
+            logger.info("[%s] already running, skip startup", self.task_name)
             return
 
         self._task = asyncio.create_task(
             self.run_forever(),
-            name="daily-market-analysis-scheduler",
+            name=self.task_name,
         )
+        logger.info("[%s] scheduler startup completed", self.task_name)
 
     async def start(self):
         await self.startup()
@@ -72,6 +92,7 @@ class DailyScheduler:
 
         self._task = None
         self._next_run_time = None
+        logger.info("[%s] scheduler shutdown completed", self.task_name)
 
     async def stop(self):
         await self.shutdown()
@@ -80,19 +101,22 @@ class DailyScheduler:
         while True:
             next_run = self.get_next_run_time()
             self._next_run_time = next_run
+
             now = datetime.now(ZoneInfo(self.timezone))
-            wait_seconds = (next_run - now).total_seconds()
+            wait_seconds = max((next_run - now).total_seconds(), 0.0)
 
             logger.info(
-                f"next run at {next_run.strftime('%Y-%m-%d %H:%M:%S %Z')}, "
-                f"waiting {int(wait_seconds)} seconds"
+                "[%s] next run at %s, waiting %s seconds",
+                self.task_name,
+                next_run.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                int(wait_seconds),
             )
 
             await asyncio.sleep(wait_seconds)
 
             try:
-                logger.info("daily task started")
+                logger.info("[%s] daily task started", self.task_name)
                 await self.task_callable()
-                logger.info("daily task finished")
+                logger.info("[%s] daily task finished", self.task_name)
             except Exception as e:
-                logger.exception(f"daily task failed: {e}")
+                logger.exception("[%s] daily task failed: %s", self.task_name, e)

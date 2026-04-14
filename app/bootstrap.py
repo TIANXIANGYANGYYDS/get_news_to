@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import inspect
+import os
 import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -24,6 +25,7 @@ from app.repo import (
     Sector3DDailySummaryRepository,
     SectorInvestmentPreferenceRankingRepository,
     SectorMarketHeatRankingRepository,
+    DailyKLineSnapshotRepository,
 )
 from app.crawlers.Get_cls_telegraph import (
     fetch_latest_telegraphs as fetch_latest_cls_telegraphs,
@@ -36,6 +38,12 @@ from app.crawlers.Get_10jqka_telegraph import (
 )
 from app.model import CLSTelegraph, CLSTelegraphLLMAnalysis
 
+from datetime import datetime, timedelta, time as dt_time
+from app.crawlers.Get_Daily_K_line_data import (
+    EastmoneyAShareCrawler,
+    ShanchenProxyProvider,
+)
+
 logger = get_logger("bootstrap")
 
 # A 股主板日历，这里使用上交所交易日历即可覆盖常见 A 股交易日判断逻辑
@@ -46,6 +54,7 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 
 
 class Application:
+
     def __init__(self):
         """
         应用主入口对象。
@@ -54,7 +63,7 @@ class Application:
         1. 初始化飞书通知组件
         2. 初始化每日调度器
         3. 管理 Mongo 连接与各类 repository
-        4. 管理市场资讯轮询任务（当前来源：CLS + Jin10）
+        4. 管理市场资讯轮询任务（当前来源：CLS + Jin10 + 10jqka）
         5. 管理市场资讯异步消费队列（5 个 worker）
         """
         # 飞书通知器：负责把卡片实际发送到飞书群
@@ -68,12 +77,25 @@ class Application:
         # 卡片构建器：负责把业务数据组装成飞书卡片 JSON
         self.card_builder = CardBuilder()
 
-        # 每日调度器：按配置时间触发盘前分析发送任务
-        self.scheduler = DailyScheduler(
+        # -----------------------------
+        # 每日调度器
+        # -----------------------------
+        # 每日盘前分析调度器
+        self.market_analysis_scheduler = DailyScheduler(
             hour=settings.schedule_hour,
             minute=settings.schedule_minute,
             timezone=settings.timezone,
             task_callable=self.send_daily_market_analysis_card,
+            task_name="market-analysis-scheduler",
+        )
+
+        # 每日 A 股日快照调度器（固定 15:40，中国时区）
+        self.daily_kline_snapshot_scheduler = DailyScheduler(
+            hour=15,
+            minute=40,
+            timezone="Asia/Shanghai",
+            task_callable=self.sync_daily_kline_snapshot_once,
+            task_name="daily-kline-snapshot-scheduler",
         )
 
         # -----------------------------
@@ -82,7 +104,7 @@ class Application:
         self.mongo_client = None
         self.db = None
 
-        # 统一资讯原始表 repository（CLS + Jin10 共用）
+        # 统一资讯原始表 repository（CLS + Jin10 + 10jqka 共用）
         self.cls_telegraph_repository = None
 
         # 三日内版块汇总表 repository
@@ -96,6 +118,9 @@ class Application:
 
         # 每日盘前分析表 repository
         self.daily_market_analysis_repository = None
+
+        # A 股日快照 repository
+        self.daily_kline_snapshot_repository = None
 
         # 轮询任务句柄
         self.cls_telegraph_polling_task = None
@@ -119,6 +144,7 @@ class Application:
         # worker 处理完后只打事件，不在每条上直接重刷，避免太重
         self.sector_views_refresh_event = asyncio.Event()
         self.sector_views_refresh_task = None
+
 
     def get_a_share_trade_dates(self, now: datetime | None = None) -> tuple[str, str]:
         """
@@ -204,49 +230,46 @@ class Application:
             return await result
         return result
 
-    async def _start_scheduler(self):
+    async def _start_scheduler(self, scheduler: DailyScheduler | None, scheduler_name: str):
         """
-        启动每日调度器。
+        启动某个每日调度器。
 
         兼容两种方法名：
         - startup()
         - start()
-
-        任意命中一个即可启动，否则只记录 warning，不中断主流程。
         """
-        if self.scheduler is None:
+        if scheduler is None:
             return
 
         for method_name in ("startup", "start"):
-            method = getattr(self.scheduler, method_name, None)
+            method = getattr(scheduler, method_name, None)
             if callable(method):
                 await self._maybe_await(method())
-                logger.info("daily scheduler started by %s()", method_name)
+                logger.info("%s started by %s()", scheduler_name, method_name)
                 return
 
-        logger.warning("daily scheduler has no startup()/start() method, skip starting")
+        logger.warning("%s has no startup()/start() method, skip starting", scheduler_name)
 
-    async def _stop_scheduler(self):
+
+    async def _stop_scheduler(self, scheduler: DailyScheduler | None, scheduler_name: str):
         """
-        停止每日调度器。
+        停止某个每日调度器。
 
         兼容两种方法名：
         - shutdown()
         - stop()
-
-        任意命中一个即可停止，否则只记录 warning，不中断主流程。
         """
-        if self.scheduler is None:
+        if scheduler is None:
             return
 
         for method_name in ("shutdown", "stop"):
-            method = getattr(self.scheduler, method_name, None)
+            method = getattr(scheduler, method_name, None)
             if callable(method):
                 await self._maybe_await(method())
-                logger.info("daily scheduler stopped by %s()", method_name)
+                logger.info("%s stopped by %s()", scheduler_name, method_name)
                 return
 
-        logger.warning("daily scheduler has no shutdown()/stop() method, skip stopping")
+        logger.warning("%s has no shutdown()/stop() method, skip stopping", scheduler_name)
 
     @staticmethod
     def _normalize_dedup_text(text: str) -> str:
@@ -466,6 +489,124 @@ class Application:
             logger.info("batch cross-source dedup removed %s duplicate rows", removed_count)
 
         return deduped_rows
+
+
+    def is_a_share_trade_day(self, now: datetime | None = None) -> bool:
+        """
+        判断当前日期是否为 A 股交易日（中国时区）
+        """
+        now = now.astimezone(CN_TZ) if now else datetime.now(CN_TZ)
+        candidate = pd.Timestamp(now.date())
+        return bool(XSHG.is_session(candidate))
+
+
+    async def sync_daily_kline_snapshot_once(self) -> None:
+        """
+        每天 15:40 执行一次：
+        1. 仅在 A 股交易日执行
+        2. 先检查库里是否已有当前业务交易日的数据
+        3. 若没有，再爬取东方财富 A 股列表快照
+        4. 按 trade_date + symbol 去重 upsert 入库
+        5. 成功后删除当日 checkpoint
+        """
+        if self.daily_kline_snapshot_repository is None:
+            logger.warning("daily_kline_snapshot_repository is not initialized")
+            return
+
+        checkpoint_file: str | None = None
+
+        try:
+            now = datetime.now(CN_TZ)
+
+            # 非交易日直接跳过
+            if not self.is_a_share_trade_day(now):
+                logger.info(
+                    "skip daily kline snapshot because today is not a-share trading day, now=%s",
+                    now.isoformat(),
+                )
+                return
+
+            # 这里的“当天”按业务交易日定义：
+            # 9点前属于上一个交易日；9点后属于当天交易日（若非交易日则回退最近交易日）
+            today_trade_date, _ = self.get_a_share_trade_dates(now)
+            trade_date = self._format_trade_date(today_trade_date)
+
+            # 先查库：如果当天交易日数据已经存在，就不再启动爬虫
+            already_exists = await self.daily_kline_snapshot_repository.has_trade_date_data(trade_date)
+            if already_exists:
+                logger.info(
+                    "skip daily kline snapshot because trade_date=%s already exists in db",
+                    trade_date,
+                )
+                return
+
+            proxy_api_url = (
+                "https://sch.shanchendaili.com/api.html"
+                "?action=get_ip"
+                f"&key={settings.proxy_api_key}"
+                "&time=1"
+                "&count=1"
+                "&type=json"
+                "&only=0"
+            )
+
+            provider = ShanchenProxyProvider(
+                api_url=proxy_api_url,
+                timeout=10,
+                scheme="http",
+            )
+
+            checkpoint_file = f"eastmoney_a_share_checkpoint_{trade_date}.json"
+
+            crawler = EastmoneyAShareCrawler(
+                page_size=100,
+                timeout=20,
+                page_retry=8,
+                min_sleep=0.0,
+                max_sleep=0.0,
+                batch_pages=0,
+                batch_sleep_min=0.0,
+                batch_sleep_max=0.0,
+                checkpoint_file=checkpoint_file,
+                proxy_provider=provider,
+            )
+
+            raw_rows, _display_rows = await asyncio.to_thread(
+                crawler.fetch_all,
+                80,
+                True,
+                False,
+            )
+
+            if not raw_rows:
+                logger.warning("daily kline snapshot fetched empty, trade_date=%s", trade_date)
+                return
+
+            result = await self.daily_kline_snapshot_repository.bulk_upsert(
+                rows=raw_rows,
+                trade_date=trade_date,
+            )
+
+            if result is None:
+                logger.warning("daily kline snapshot bulk_upsert not executed, trade_date=%s", trade_date)
+                return
+
+            logger.info(
+                "daily kline snapshot synced successfully, trade_date=%s, total_rows=%s, matched=%s, modified=%s, upserted=%s",
+                trade_date,
+                len(raw_rows),
+                result.matched_count,
+                result.modified_count,
+                len(result.upserted_ids),
+            )
+
+            # 成功入库后删除当日 checkpoint
+            if checkpoint_file and os.path.exists(checkpoint_file):
+                os.remove(checkpoint_file)
+                logger.info("daily kline snapshot checkpoint removed: %s", checkpoint_file)
+
+        except Exception as e:
+            logger.exception("sync_daily_kline_snapshot_once failed: %s", e)
 
     async def _try_register_pending_event_id(self, event_id: str) -> bool:
         """
@@ -1176,10 +1317,10 @@ class Application:
         1. 启动飞书 notifier
         2. 建立 Mongo 连接
         3. 初始化各 repository 并建索引
-        4. 启动每日调度器
+        4. 启动每日调度器（盘前分析 + A股日快照）
         5. 启动 5 个市场资讯 worker
         6. 启动版块衍生视图后台刷新任务
-        7. 启动时先同步一次市场资讯（首次不发入库卡，防止刷屏）
+        7. 启动时先同步一次市场资讯
         8. 创建常驻轮询后台任务
         """
         await self.notifier.startup()
@@ -1217,11 +1358,37 @@ class Application:
         self.daily_market_analysis_repository = DailyMarketAnalysisRepository(self.db)
         await self.daily_market_analysis_repository.create_indexes()
 
-        # 启动每日盘前调度器
+        # 初始化 A 股日快照 repository
+        self.daily_kline_snapshot_repository = DailyKLineSnapshotRepository(self.db)
+        await self.daily_kline_snapshot_repository.create_indexes()
+
+
+        # 启动时主动检查一次 A 股日快照：
+        # - 非交易日会自动跳过
+        # - 当天交易日已有数据会自动跳过
+        # - 当天交易日还没有数据则补抓一次
         try:
-            await self._start_scheduler()
+            await self.sync_daily_kline_snapshot_once()
         except Exception as e:
-            logger.exception("start daily scheduler failed: %s", e)
+            logger.warning("startup daily kline snapshot skipped: %s", e)
+
+        # 启动每日盘前分析调度器
+        try:
+            await self._start_scheduler(
+                self.market_analysis_scheduler,
+                "market_analysis_scheduler",
+            )
+        except Exception as e:
+            logger.exception("start market_analysis_scheduler failed: %s", e)
+
+        # 启动每日 A 股日快照调度器（15:40）
+        try:
+            await self._start_scheduler(
+                self.daily_kline_snapshot_scheduler,
+                "daily_kline_snapshot_scheduler",
+            )
+        except Exception as e:
+            logger.exception("start daily_kline_snapshot_scheduler failed: %s", e)
 
         # 启动市场资讯 worker 池
         self.market_telegraph_worker_tasks = [
@@ -1234,7 +1401,7 @@ class Application:
             self._sector_views_refresh_loop()
         )
 
-        # 启动时先同步一次市场资讯，但首次灌库不发入库卡，避免群里刷屏
+        # 启动时先同步一次市场资讯
         try:
             await self.sync_cls_telegraphs_once(send_insert_card=True)
         except Exception as e:
@@ -1245,6 +1412,7 @@ class Application:
             self.cls_telegraph_polling_loop()
         )
 
+
     async def shutdown(self):
         """
         应用关闭流程。
@@ -1253,7 +1421,7 @@ class Application:
         1. 取消轮询任务
         2. 取消版块衍生视图刷新任务
         3. 取消 worker 池
-        4. 停止每日调度器
+        4. 停止每日调度器（盘前分析 + A股日快照）
         5. 关闭 Mongo 连接
         6. 关闭飞书 notifier
         """
@@ -1280,9 +1448,20 @@ class Application:
             self.market_telegraph_worker_tasks = []
 
         try:
-            await self._stop_scheduler()
+            await self._stop_scheduler(
+                self.market_analysis_scheduler,
+                "market_analysis_scheduler",
+            )
         except Exception as e:
-            logger.exception("stop daily scheduler failed: %s", e)
+            logger.exception("stop market_analysis_scheduler failed: %s", e)
+
+        try:
+            await self._stop_scheduler(
+                self.daily_kline_snapshot_scheduler,
+                "daily_kline_snapshot_scheduler",
+            )
+        except Exception as e:
+            logger.exception("stop daily_kline_snapshot_scheduler failed: %s", e)
 
         if self.mongo_client is not None:
             self.mongo_client.close()

@@ -25,6 +25,8 @@ class Settings:
     mongo_uri: str = os.getenv("MONGO_URI", "").strip()
     mongo_db_name: str = os.getenv("MONGO_DB_NAME", "").strip()
 
+    proxy_api_key : str = os.getenv("PROXY_API_KEY", "").strip()
+
 
     def validate(self):
         required_fields = {
