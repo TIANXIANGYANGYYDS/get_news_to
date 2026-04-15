@@ -1,0 +1,31 @@
+:root {
+  --page-bg: #151f3f;
+  --card-bg: #151f3f;
+  --card-border: #313343;
+  --accent-border-hover: #4a4d63;
+
+  --title-text: #d7dae4;
+  --content-text: #7d8396;
+  --accent-text: #d76d6d;
+
+  --rank-bg: rgba(217, 111, 111, 0.22);
+  --badge-bg: rgba(215, 111, 111, 0.25);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  background: var(--page-bg);
+  color: var(--title-text);
+}
