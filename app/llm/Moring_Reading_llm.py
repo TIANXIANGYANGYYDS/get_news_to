@@ -276,6 +276,16 @@ def _extract_mainline_names(text: str) -> list[str]:
     return [name.strip() for _, name in MAINLINE_PATTERN.findall(text)]
 
 
+def extract_mainline_sectors(text: str, top_n: int = 5) -> list[dict[str, Any]]:
+    """
+    从分析文本中提取主线板块，按原始顺序输出 rank + sector_name。
+    """
+    names = _extract_mainline_names(text)
+    if top_n > 0:
+        names = names[:top_n]
+    return [{"rank": idx, "sector_name": name} for idx, name in enumerate(names, start=1)]
+
+
 def _all_mainlines_in_whitelist(text: str) -> bool:
     """
     要求：
