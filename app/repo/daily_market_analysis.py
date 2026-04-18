@@ -55,3 +55,9 @@ class DailyMarketAnalysisRepository:
             {"analysis_date": analysis_date},
             projection={"_id": 0},
         )
+    async def get_by_trade_date(self, trade_date: str) -> dict | None:
+        return await self.collection.find_one(
+            {"trade_date": trade_date},
+            projection={"_id": 0},
+            sort=[("updated_at", -1)],
+        )
