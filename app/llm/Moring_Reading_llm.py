@@ -454,7 +454,7 @@ def analyze_morning_data(
     client = OpenAI(
         api_key=settings.api_key,
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        timeout=90.0,
+        timeout=300.0,
     )
 
     user_prompt = _build_user_prompt(

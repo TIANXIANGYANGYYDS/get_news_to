@@ -518,13 +518,13 @@ class Application:
         try:
             now = datetime.now(CN_TZ)
 
-            # 非交易日直接跳过
-            if not self.is_a_share_trade_day(now):
-                logger.info(
-                    "skip daily kline snapshot because today is not a-share trading day, now=%s",
-                    now.isoformat(),
-                )
-                return
+            # # 非交易日直接跳过
+            # if not self.is_a_share_trade_day(now):
+            #     logger.info(
+            #         "skip daily kline snapshot because today is not a-share trading day, now=%s",
+            #         now.isoformat(),
+            #     )
+            #     return
 
             # 这里的“当天”按业务交易日定义：
             # 9点前属于上一个交易日；9点后属于当天交易日（若非交易日则回退最近交易日）
@@ -607,6 +607,8 @@ class Application:
 
         except Exception as e:
             logger.exception("sync_daily_kline_snapshot_once failed: %s", e)
+
+
 
     async def _try_register_pending_event_id(self, event_id: str) -> bool:
         """
