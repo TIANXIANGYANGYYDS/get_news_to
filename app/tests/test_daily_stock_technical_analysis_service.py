@@ -139,9 +139,11 @@ class DailyStockTechnicalAnalysisServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.original_analyze = service_module.analyze_buy_point
         self.llm_call_count = 0
+        self.llm_calls = []
 
         def fake_analyze(*args, **kwargs):
             self.llm_call_count += 1
+            self.llm_calls.append({"args": args, "kwargs": kwargs})
             llm_analysis = SimpleNamespace(
                 model_dump=lambda: {
                     "conclusion": "不买",
@@ -251,6 +253,17 @@ class DailyStockTechnicalAnalysisServiceTests(unittest.IsolatedAsyncioTestCase):
 
         stats = await service.run_once()
         self.assertEqual(stats.target_trade_date, "2026-01-09")
+
+
+    async def test_llm_call_without_explicit_recent_high_low(self):
+        repo = FakeTechnicalResultRepository()
+        service = self._build_service(repo, {"000001": build_bars(30), "000002": build_bars(30)})
+
+        await service.run_once()
+        self.assertTrue(self.llm_calls)
+        for call in self.llm_calls:
+            self.assertEqual(set(call["kwargs"].keys()), {"symbol", "bars", "period"})
+            self.assertEqual(call["kwargs"]["period"], "日线")
 
     async def test_partial_succeeded_only_backfill_rest(self):
         repo = FakeTechnicalResultRepository()

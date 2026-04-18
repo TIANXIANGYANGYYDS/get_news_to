@@ -131,6 +131,7 @@ class Application:
 
         # 每日个股技术分析服务
         self.daily_stock_technical_analysis_service = None
+        self.daily_stock_technical_analysis_task = None
 
         # 轮询任务句柄
         self.cls_telegraph_polling_task = None
@@ -1471,6 +1472,12 @@ class Application:
         5. 关闭 Mongo 连接
         6. 关闭飞书 notifier
         """
+        if self.daily_stock_technical_analysis_task is not None:
+            self.daily_stock_technical_analysis_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.daily_stock_technical_analysis_task
+            self.daily_stock_technical_analysis_task = None
+
         if self.cls_telegraph_polling_task is not None:
             self.cls_telegraph_polling_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1513,6 +1520,33 @@ class Application:
             self.mongo_client.close()
 
         await self.notifier.shutdown()
+
+    def _trigger_daily_stock_technical_analysis_background(self):
+        """
+        非阻塞触发每日个股技术分析：
+        - 盘前主流程不等待该任务完成
+        - 已有同类任务在跑时不重复创建
+        """
+        if self.daily_stock_technical_analysis_service is None:
+            logger.warning("daily_stock_technical_analysis_service is not initialized")
+            return
+
+        if self.daily_stock_technical_analysis_task is not None and not self.daily_stock_technical_analysis_task.done():
+            logger.info("daily stock technical analysis task already running, skip duplicate trigger")
+            return
+
+        async def _runner():
+            try:
+                await self.daily_stock_technical_analysis_service.run_once()
+                logger.info("daily stock technical analysis service finished")
+            except Exception as e:
+                logger.exception("daily stock technical analysis service failed: %s", e)
+
+        self.daily_stock_technical_analysis_task = asyncio.create_task(
+            _runner(),
+            name="daily-stock-technical-analysis",
+        )
+        logger.info("daily stock technical analysis service triggered in background")
 
     async def send_daily_test_card(self):
         """
@@ -1712,16 +1746,8 @@ class Application:
             else:
                 logger.warning("daily_market_analysis_repository is not initialized")
 
-            # 独立模块：盘前分析完成后，触发每日个股纯技术分析服务
-            if self.daily_stock_technical_analysis_service is not None:
-                try:
-                    await self.daily_stock_technical_analysis_service.run_once()
-                    logger.info("daily stock technical analysis service finished")
-                except Exception as e:
-                    # 不影响原有盘前分析主流程与飞书发送
-                    logger.exception("daily stock technical analysis service failed: %s", e)
-            else:
-                logger.warning("daily_stock_technical_analysis_service is not initialized")
+            # 独立模块：盘前分析完成后，后台触发每日个股纯技术分析服务（不阻塞主卡片发送）
+            self._trigger_daily_stock_technical_analysis_background()
 
             # 发送盘前主线分析飞书卡片
             card = self.card_builder.build_daily_market_analysis_card(

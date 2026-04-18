@@ -191,11 +191,9 @@ class DailyStockTechnicalAnalysisService:
             context_fields = self._build_context_fields(stock_item=stock_item, bars=bars)
             result = await asyncio.to_thread(
                 analyze_buy_point,
-                stock_item["stock_code"],
-                bars,
-                "日线",
-                context_fields.get("recent_high"),
-                context_fields.get("recent_low"),
+                symbol=stock_item["stock_code"],
+                bars=bars,
+                period="日线",
             )
 
             llm_fields = result.llm_analysis.model_dump()

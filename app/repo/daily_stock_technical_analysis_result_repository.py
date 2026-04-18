@@ -82,7 +82,8 @@ class DailyStockTechnicalAnalysisResultRepository:
         """
         stock_code = stock["stock_code"]
         stale_before = now - timedelta(minutes=running_timeout_minutes)
-        claim_payload = self._build_running_payload(trade_date=trade_date, stock=stock, now=now)
+        claim_update_fields = self._build_running_update_fields(stock=stock, now=now)
+        claim_insert_payload = self._build_running_insert_payload(trade_date=trade_date, stock=stock, now=now)
 
         retry_result = await self.collection.update_one(
             {
@@ -90,7 +91,7 @@ class DailyStockTechnicalAnalysisResultRepository:
                 "stock_code": stock_code,
                 "analysis_status": {"$in": ["failed", "skipped_data_insufficient"]},
             },
-            {"$set": claim_payload},
+            {"$set": claim_update_fields},
         )
         if retry_result.modified_count > 0:
             return ClaimResult(claimed=True, reason="claimed_retry")
@@ -102,7 +103,7 @@ class DailyStockTechnicalAnalysisResultRepository:
                 "analysis_status": "running",
                 "updated_at": {"$lte": stale_before},
             },
-            {"$set": claim_payload},
+            {"$set": claim_update_fields},
         )
         if takeover_result.modified_count > 0:
             return ClaimResult(claimed=True, reason="claimed_takeover")
@@ -110,7 +111,7 @@ class DailyStockTechnicalAnalysisResultRepository:
         try:
             insert_result = await self.collection.update_one(
                 {"trade_date": trade_date, "stock_code": stock_code},
-                {"$setOnInsert": claim_payload},
+                {"$setOnInsert": claim_insert_payload},
                 upsert=True,
             )
             if insert_result.upserted_id is not None:
@@ -201,8 +202,8 @@ class DailyStockTechnicalAnalysisResultRepository:
         )
 
     @staticmethod
-    def _build_running_payload(*, trade_date: str, stock: dict[str, Any], now: datetime) -> dict[str, Any]:
-        doc = DailyStockTechnicalAnalysisResult(
+    def _build_running_insert_payload(*, trade_date: str, stock: dict[str, Any], now: datetime) -> dict[str, Any]:
+        return DailyStockTechnicalAnalysisResult(
             trade_date=trade_date,
             analysis_time=now.replace(microsecond=0),
             sector_name=stock.get("sector_name") or "",
@@ -215,6 +216,14 @@ class DailyStockTechnicalAnalysisResultRepository:
             updated_at=now,
         ).to_mongo_dict()
 
-        doc.pop("id", None)
-        doc.pop("created_at", None)
-        return doc
+    @staticmethod
+    def _build_running_update_fields(*, stock: dict[str, Any], now: datetime) -> dict[str, Any]:
+        return {
+            "analysis_time": now.replace(microsecond=0),
+            "sector_name": stock.get("sector_name") or "",
+            "sector_rank": stock.get("sector_rank"),
+            "stock_name": stock.get("stock_name"),
+            "stock_rank_in_sector": stock.get("stock_rank_in_sector"),
+            "analysis_status": "running",
+            "updated_at": now,
+        }
