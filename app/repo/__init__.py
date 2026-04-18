@@ -9,6 +9,7 @@ from .daily_market_analysis import DailyMarketAnalysisRepository
 from .sector_investment_preference_ranking_repository import SectorInvestmentPreferenceRankingRepository
 from .sector_market_heat_ranking_repository import SectorMarketHeatRankingRepository
 from .daily_kline_snapshot import DailyKLineSnapshotRepository
+from .daily_stock_technical_analysis_result_repository import DailyStockTechnicalAnalysisResultRepository, ClaimResult
 
 __all__ = [
     "CLSTelegraphRepository",
@@ -17,4 +18,6 @@ __all__ = [
     "SectorInvestmentPreferenceRankingRepository",
     "SectorMarketHeatRankingRepository",
     "DailyKLineSnapshotRepository",
+    "DailyStockTechnicalAnalysisResultRepository",
+    "ClaimResult",
 ]

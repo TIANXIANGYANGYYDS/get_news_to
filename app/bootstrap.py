@@ -26,6 +26,7 @@ from app.repo import (
     SectorInvestmentPreferenceRankingRepository,
     SectorMarketHeatRankingRepository,
     DailyKLineSnapshotRepository,
+    DailyStockTechnicalAnalysisResultRepository,
 )
 from app.crawlers.Get_cls_telegraph import (
     fetch_latest_telegraphs as fetch_latest_cls_telegraphs,
@@ -38,6 +39,7 @@ from app.crawlers.Get_10jqka_telegraph import (
 )
 from app.crawlers.Get_10jqka_sector_top_stocks import fetch_sector_top_stocks_by_name
 from app.model import CLSTelegraph, CLSTelegraphLLMAnalysis
+from app.services import DailyStockTechnicalAnalysisService
 
 from datetime import datetime, timedelta, time as dt_time
 from app.crawlers.Get_Daily_K_line_data import (
@@ -124,6 +126,13 @@ class Application:
         # A 股日快照 repository
         self.daily_kline_snapshot_repository = None
 
+        # 每日个股技术分析结果 repository
+        self.daily_stock_technical_analysis_result_repository = None
+
+        # 每日个股技术分析服务
+        self.daily_stock_technical_analysis_service = None
+        self.daily_stock_technical_analysis_task = None
+
         # 轮询任务句柄
         self.cls_telegraph_polling_task = None
 
@@ -177,6 +186,22 @@ class Application:
         prev_trade_day = XSHG.previous_session(today_trade_day)
 
         return today_trade_day.strftime("%Y%m%d"), prev_trade_day.strftime("%Y%m%d")
+
+    def resolve_target_trade_date(self, now: datetime | None = None) -> str:
+        """
+        解析本次任务 target_trade_date：
+        - 交易日：今天
+        - 非交易日：回退到上一个交易日
+
+        复用项目里现有交易日判断与前一交易日函数。
+        """
+        current = now.astimezone(CN_TZ) if now else datetime.now(CN_TZ)
+        today_trade_date, prev_trade_date = self.get_a_share_trade_dates(current)
+
+        if self.is_a_share_trade_day(current):
+            return self._format_trade_date(today_trade_date)
+
+        return self._format_trade_date(prev_trade_date)
 
     @staticmethod
     def _format_trade_date(trade_date: str) -> str:
@@ -1370,6 +1395,20 @@ class Application:
         self.daily_kline_snapshot_repository = DailyKLineSnapshotRepository(self.db)
         await self.daily_kline_snapshot_repository.create_indexes()
 
+        # 初始化每日个股技术分析结果 repository
+        self.daily_stock_technical_analysis_result_repository = DailyStockTechnicalAnalysisResultRepository(self.db)
+        await self.daily_stock_technical_analysis_result_repository.create_indexes()
+
+        # 初始化每日个股技术分析服务
+        self.daily_stock_technical_analysis_service = DailyStockTechnicalAnalysisService(
+            daily_market_analysis_repository=self.daily_market_analysis_repository,
+            daily_kline_snapshot_repository=self.daily_kline_snapshot_repository,
+            technical_result_repository=self.daily_stock_technical_analysis_result_repository,
+            resolve_target_trade_date=self.resolve_target_trade_date,
+            worker_concurrency=settings.stock_tech_analysis_worker_concurrency,
+            running_timeout_minutes=settings.stock_tech_analysis_running_timeout_minutes,
+        )
+
 
         # 启动时主动检查一次 A 股日快照：
         # - 非交易日会自动跳过
@@ -1433,6 +1472,12 @@ class Application:
         5. 关闭 Mongo 连接
         6. 关闭飞书 notifier
         """
+        if self.daily_stock_technical_analysis_task is not None:
+            self.daily_stock_technical_analysis_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.daily_stock_technical_analysis_task
+            self.daily_stock_technical_analysis_task = None
+
         if self.cls_telegraph_polling_task is not None:
             self.cls_telegraph_polling_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1475,6 +1520,33 @@ class Application:
             self.mongo_client.close()
 
         await self.notifier.shutdown()
+
+    def _trigger_daily_stock_technical_analysis_background(self, analysis_trade_date: str | None = None):
+        """
+        非阻塞触发每日个股技术分析：
+        - 盘前主流程不等待该任务完成
+        - 已有同类任务在跑时不重复创建
+        """
+        if self.daily_stock_technical_analysis_service is None:
+            logger.warning("daily_stock_technical_analysis_service is not initialized")
+            return
+
+        if self.daily_stock_technical_analysis_task is not None and not self.daily_stock_technical_analysis_task.done():
+            logger.info("daily stock technical analysis task already running, skip duplicate trigger")
+            return
+
+        async def _runner():
+            try:
+                await self.daily_stock_technical_analysis_service.run_once(analysis_trade_date=analysis_trade_date)
+                logger.info("daily stock technical analysis service finished")
+            except Exception as e:
+                logger.exception("daily stock technical analysis service failed: %s", e)
+
+        self.daily_stock_technical_analysis_task = asyncio.create_task(
+            _runner(),
+            name="daily-stock-technical-analysis",
+        )
+        logger.info("daily stock technical analysis service triggered in background")
 
     async def send_daily_test_card(self):
         """
@@ -1673,6 +1745,9 @@ class Application:
                 )
             else:
                 logger.warning("daily_market_analysis_repository is not initialized")
+
+            # 独立模块：盘前分析完成后，后台触发每日个股纯技术分析服务（不阻塞主卡片发送）
+            self._trigger_daily_stock_technical_analysis_background(analysis_trade_date=analysis_date)
 
             # 发送盘前主线分析飞书卡片
             card = self.card_builder.build_daily_market_analysis_card(

@@ -153,3 +153,21 @@ class DailyKLineSnapshotRepository:
             projection={"_id": 1},
         )
         return doc is not None
+
+    async def get_recent_bars(self, symbol: str, end_trade_date: str, limit: int = 30) -> list[dict]:
+        """
+        查询某只股票截止 end_trade_date（含）最近 N 根日K。
+        先倒序取 limit 条，再转升序返回，保证送给 LLM 的输入按时间升序。
+        """
+        rows = await self.collection.find(
+            {
+                "symbol": symbol,
+                "trade_date": {"$lte": end_trade_date},
+            },
+            projection={"_id": 0},
+            sort=[("trade_date", -1)],
+            limit=limit,
+        ).to_list(length=limit)
+
+        rows.reverse()
+        return rows

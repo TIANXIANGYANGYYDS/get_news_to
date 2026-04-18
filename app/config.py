@@ -27,6 +27,9 @@ class Settings:
 
     proxy_api_key : str = os.getenv("PROXY_API_KEY", "").strip()
 
+    stock_tech_analysis_worker_concurrency: int = int(os.getenv("STOCK_TECH_ANALYSIS_WORKER_CONCURRENCY", "6"))
+    stock_tech_analysis_running_timeout_minutes: int = int(os.getenv("STOCK_TECH_ANALYSIS_RUNNING_TIMEOUT_MINUTES", "10"))
+
 
     def validate(self):
         required_fields = {
