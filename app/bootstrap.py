@@ -16,7 +16,7 @@ from app.feishu.card_builder import CardBuilder
 from app.logger import get_logger
 from app.scheduler import DailyScheduler
 from app.crawlers.Get_Morning_Reading import fetch_and_split_morning_data
-from app.llm.Moring_Reading_llm import analyze_morning_data
+from app.llm.Moring_Reading_llm import analyze_morning_data, extract_mainline_sectors
 from app.crawlers.Get_fupan import fetch_fupan_full_visible_text, build_fupan_url
 from app.llm.cls_telegraph_llm import analyze_cls_telegraph
 from app.repo import (
@@ -36,6 +36,7 @@ from app.crawlers.Get_jin10_telegraph import (
 from app.crawlers.Get_10jqka_telegraph import (
     fetch_latest_telegraphs as fetch_latest_10jqka_telegraphs,
 )
+from app.crawlers.Get_10jqka_sector_top_stocks import fetch_sector_top_stocks_by_name
 from app.model import CLSTelegraph, CLSTelegraphLLMAnalysis
 
 from datetime import datetime, timedelta, time as dt_time
@@ -43,6 +44,7 @@ from app.crawlers.Get_Daily_K_line_data import (
     EastmoneyAShareCrawler,
     ShanchenProxyProvider,
 )
+from app.crawlers.proxy_provider import NoProxyProvider
 
 logger = get_logger("bootstrap")
 
@@ -200,6 +202,8 @@ class Application:
         morning_data: dict,
         prev_day_review: str,
         analysis_text: str,
+        mainline_sectors: list[dict] | None = None,
+        sector_top_stocks: list[dict] | None = None,
     ) -> dict:
         """
         构造“盘前主线分析”入库文档。
@@ -216,6 +220,8 @@ class Application:
             "morning_data": morning_data,
             "prev_day_review": prev_day_review,
             "analysis_text": analysis_text,
+            "mainline_sectors": mainline_sectors or [],
+            "sector_top_stocks": sector_top_stocks or [],
         }
 
     async def _maybe_await(self, result):
@@ -1583,6 +1589,67 @@ class Application:
 
             logger.info("llm analysis finished, analysis_len=%s", len(analysis_text))
 
+            mainline_sectors: list[dict] = []
+            sector_top_stocks: list[dict] = []
+            sector_proxy_provider = NoProxyProvider()
+
+            if settings.proxy_api_key:
+                try:
+                    proxy_api_url = (
+                        "https://sch.shanchendaili.com/api.html"
+                        "?action=get_ip"
+                        f"&key={settings.proxy_api_key}"
+                        "&time=1"
+                        "&count=1"
+                        "&type=json"
+                        "&only=0"
+                    )
+                    sector_proxy_provider = ShanchenProxyProvider(
+                        api_url=proxy_api_url,
+                        timeout=10,
+                        scheme="http",
+                    )
+                except Exception as e:
+                    logger.exception("init sector proxy provider failed, fallback local only: %s", e)
+                    sector_proxy_provider = NoProxyProvider()
+
+            try:
+                mainline_sectors = extract_mainline_sectors(analysis_text, top_n=5)
+            except Exception as e:
+                logger.exception("extract mainline sectors failed: %s", e)
+                mainline_sectors = []
+
+            for sector in mainline_sectors:
+                rank = sector.get("rank")
+                sector_name = (sector.get("sector_name") or "").strip()
+                if not sector_name:
+                    continue
+
+                sector_item = {
+                    "rank": rank,
+                    "sector_name": sector_name,
+                    "sector_code": None,
+                    "stocks": [],
+                }
+                try:
+                    fetched = await asyncio.to_thread(
+                        fetch_sector_top_stocks_by_name,
+                        sector_name,
+                        20,
+                        12,
+                        sector_proxy_provider,
+                        1,
+                    )
+                    sector_item["sector_code"] = fetched.get("sector_code")
+                    sector_item["stocks"] = fetched.get("stocks") or []
+                except Exception as e:
+                    logger.exception(
+                        "fetch sector top stocks failed in bootstrap, sector_name=%s, err=%s",
+                        sector_name,
+                        e,
+                    )
+                sector_top_stocks.append(sector_item)
+
             # 先入库/更新，保证当天只有一条
             if self.daily_market_analysis_repository is not None:
                 doc = self._build_daily_market_analysis_doc(
@@ -1592,6 +1659,8 @@ class Application:
                     morning_data=morning_data,
                     prev_day_review=prev_day_review,
                     analysis_text=analysis_text,
+                    mainline_sectors=mainline_sectors,
+                    sector_top_stocks=sector_top_stocks,
                 )
 
                 update_result = await self.daily_market_analysis_repository.upsert_one(doc)
