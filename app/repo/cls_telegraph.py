@@ -1,3 +1,6 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from typing import List
 from pymongo.results import UpdateResult
 
@@ -74,3 +77,96 @@ class CLSTelegraphRepository:
                 existing.add(event_id)
 
         return existing
+    async def list_by_filters(
+        self,
+        *,
+        trade_date: str | None = None,
+        sector: str | None = None,
+        source: str | None = None,
+        keyword: str | None = None,
+        min_score: float | None = None,
+        skip: int = 0,
+        limit: int = 20,
+    ) -> list[dict]:
+        query: dict = {}
+
+        if trade_date:
+            day_start = int(datetime.fromisoformat(f"{trade_date}T00:00:00").replace(tzinfo=ZoneInfo("Asia/Shanghai")).timestamp())
+            day_end = int(datetime.fromisoformat(f"{trade_date}T23:59:59").replace(tzinfo=ZoneInfo("Asia/Shanghai")).timestamp())
+            query["publish_ts"] = {"$gte": day_start, "$lte": day_end}
+
+        if sector:
+            query["llm_analysis.sectors"] = sector
+
+        if source:
+            query["source"] = source
+
+        if keyword:
+            pattern = {"$regex": keyword, "$options": "i"}
+            query["$or"] = [{"title": pattern}, {"content": pattern}]
+
+        if min_score is not None:
+            query["llm_analysis.score"] = {"$gte": min_score}
+
+        rows = await self.collection.find(
+            query,
+            projection={"_id": 0},
+            sort=[("publish_ts", -1), ("event_id", 1)],
+            skip=max(skip, 0),
+            limit=max(limit, 1),
+        ).to_list(length=max(limit, 1))
+
+        return rows
+
+    async def count_by_filters(
+        self,
+        *,
+        trade_date: str | None = None,
+        sector: str | None = None,
+        source: str | None = None,
+        keyword: str | None = None,
+        min_score: float | None = None,
+    ) -> int:
+        query: dict = {}
+
+        if trade_date:
+            day_start = int(datetime.fromisoformat(f"{trade_date}T00:00:00").replace(tzinfo=ZoneInfo("Asia/Shanghai")).timestamp())
+            day_end = int(datetime.fromisoformat(f"{trade_date}T23:59:59").replace(tzinfo=ZoneInfo("Asia/Shanghai")).timestamp())
+            query["publish_ts"] = {"$gte": day_start, "$lte": day_end}
+
+        if sector:
+            query["llm_analysis.sectors"] = sector
+
+        if source:
+            query["source"] = source
+
+        if keyword:
+            pattern = {"$regex": keyword, "$options": "i"}
+            query["$or"] = [{"title": pattern}, {"content": pattern}]
+
+        if min_score is not None:
+            query["llm_analysis.score"] = {"$gte": min_score}
+
+        return await self.collection.count_documents(query)
+
+    async def list_recent_by_sector(self, sector: str, limit: int = 20) -> list[dict]:
+        if not sector:
+            return []
+
+        rows = await self.collection.find(
+            {"llm_analysis.sectors": sector},
+            projection={"_id": 0},
+            sort=[("publish_ts", -1), ("event_id", 1)],
+            limit=max(limit, 1),
+        ).to_list(length=max(limit, 1))
+
+        return rows
+
+    async def get_by_event_id(self, event_id: str) -> dict | None:
+        if not event_id:
+            return None
+
+        return await self.collection.find_one(
+            {"event_id": event_id},
+            projection={"_id": 0},
+        )

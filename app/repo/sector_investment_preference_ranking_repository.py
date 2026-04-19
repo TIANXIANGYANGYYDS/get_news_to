@@ -459,3 +459,12 @@ class SectorInvestmentPreferenceRankingRepository:
         """
         doc = await self.get_by_biz_date(biz_date)
         return self.build_llm_ranking_payload(doc, limit=limit)
+
+
+    async def get_full_by_biz_date(self, biz_date: str) -> dict | None:
+        doc = await self.get_by_biz_date(biz_date)
+        if not doc:
+            return None
+
+        doc.pop("_id", None)
+        return doc

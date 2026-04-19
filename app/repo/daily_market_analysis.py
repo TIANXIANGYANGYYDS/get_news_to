@@ -61,3 +61,20 @@ class DailyMarketAnalysisRepository:
             projection={"_id": 0},
             sort=[("updated_at", -1)],
         )
+
+
+    async def get_latest(self) -> dict | None:
+        return await self.collection.find_one(
+            {},
+            projection={"_id": 0},
+            sort=[("analysis_date", -1), ("updated_at", -1)],
+        )
+
+    async def list_recent(self, limit: int = 20) -> list[dict]:
+        rows = await self.collection.find(
+            {},
+            projection={"_id": 0},
+            sort=[("analysis_date", -1), ("updated_at", -1)],
+            limit=max(limit, 1),
+        ).to_list(length=max(limit, 1))
+        return rows

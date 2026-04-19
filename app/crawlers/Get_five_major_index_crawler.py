@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from proxy_provider import ProxyProvider, ShanchenProxyProvider
+from app.crawlers.proxy_provider import ProxyProvider, ShanchenProxyProvider
 
 
 class FiveMajorIndexCrawler:
