@@ -10,7 +10,7 @@ from app.api.dashboard_schemas import DashboardResponse
 from app.services.dashboard_query_service import DashboardQueryService
 
 
-router = APIRouter(prefix="/api/v1", tags=["dashboard"])
+router = APIRouter(tags=["dashboard"])
 
 
 def get_application(request: Request) -> Any:
