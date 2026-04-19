@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 
+from app.api.dashboard_routes import router as dashboard_router
 from app.api.schemas import (
     HealthResponse,
     MorningAnalysisRequest,
@@ -121,3 +122,6 @@ async def analyze_morning_endpoint(
         market_heat_ranking,
     )
     return MorningAnalysisResponse(analysis_text=analysis_text)
+
+
+router.include_router(dashboard_router)

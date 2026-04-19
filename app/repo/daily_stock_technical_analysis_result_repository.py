@@ -227,3 +227,46 @@ class DailyStockTechnicalAnalysisResultRepository:
             "analysis_status": "running",
             "updated_at": now,
         }
+
+
+    async def list_by_trade_date(self, trade_date: str) -> list[dict[str, Any]]:
+        rows = await self.collection.find(
+            {"trade_date": trade_date},
+            projection={"_id": 0},
+            sort=[("sector_rank", 1), ("stock_rank_in_sector", 1), ("stock_code", 1)],
+        ).to_list(length=None)
+        return rows
+
+    async def list_by_trade_date_sector(self, trade_date: str, sector_name: str) -> list[dict[str, Any]]:
+        rows = await self.collection.find(
+            {"trade_date": trade_date, "sector_name": sector_name},
+            projection={"_id": 0},
+            sort=[("stock_rank_in_sector", 1), ("stock_code", 1)],
+        ).to_list(length=None)
+        return rows
+
+    async def count_grouped_by_status(self, trade_date: str) -> dict[str, int]:
+        pipeline = [
+            {"$match": {"trade_date": trade_date}},
+            {"$group": {"_id": "$analysis_status", "count": {"$sum": 1}}},
+        ]
+        rows = await self.collection.aggregate(pipeline).to_list(length=None)
+        result: dict[str, int] = {}
+        for row in rows:
+            status = str(row.get("_id") or "").strip()
+            if status:
+                result[status] = int(row.get("count") or 0)
+        return result
+
+    async def count_grouped_by_status_and_sector(self, trade_date: str, sector_name: str) -> dict[str, int]:
+        pipeline = [
+            {"$match": {"trade_date": trade_date, "sector_name": sector_name}},
+            {"$group": {"_id": "$analysis_status", "count": {"$sum": 1}}},
+        ]
+        rows = await self.collection.aggregate(pipeline).to_list(length=None)
+        result: dict[str, int] = {}
+        for row in rows:
+            status = str(row.get("_id") or "").strip()
+            if status:
+                result[status] = int(row.get("count") or 0)
+        return result
