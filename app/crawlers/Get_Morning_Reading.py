@@ -54,6 +54,9 @@ def fetch_and_split_morning_data(date: str) -> dict:
     return {
         "source": "10jqka_zaopan",
         "date": formatted_date,
+        "request_url": url,
+        "response_url": resp.url,
+        "status_code": resp.status_code,
         "raw_content": raw_content,
         "sections": sections,
     }
