@@ -187,6 +187,28 @@ class Application:
 
         return today_trade_day.strftime("%Y%m%d"), prev_trade_day.strftime("%Y%m%d")
 
+    def get_morning_analysis_trade_dates(self, now: datetime | None = None) -> tuple[str, str]:
+        """
+        获取“盘前主线分析”任务专用交易日和前一交易日。
+
+        规则：
+        1. 仅基于当前自然日判断，不使用 hour >= 9 的切换逻辑
+        2. 若当天是交易日，直接使用当天
+        3. 若当天不是交易日，回退到最近一个交易日
+        4. 再基于该交易日获取前一个交易日
+        """
+        current = now.astimezone(CN_TZ) if now else datetime.now(CN_TZ)
+        candidate = pd.Timestamp(current.date())
+
+        if XSHG.is_session(candidate):
+            today_trade_day = candidate
+        else:
+            today_trade_day = XSHG.date_to_session(candidate, direction="previous")
+
+        prev_trade_day = XSHG.previous_session(today_trade_day)
+
+        return today_trade_day.strftime("%Y%m%d"), prev_trade_day.strftime("%Y%m%d")
+
     def resolve_target_trade_date(self, now: datetime | None = None) -> str:
         """
         解析本次任务 target_trade_date：
@@ -1577,7 +1599,8 @@ class Application:
         - 如果因为重启或重跑导致当天再次执行，会更新当天记录，不会新增第二条
         """
         try:
-            today_trade_date, prev_trade_date = self.get_a_share_trade_dates()
+            today_trade_date, prev_trade_date = self.get_morning_analysis_trade_dates()
+            analysis_date = self._format_trade_date(today_trade_date)
 
             logger.info("start fetching morning market data")
             morning_data = fetch_and_split_morning_data(today_trade_date)
@@ -1586,10 +1609,19 @@ class Application:
                 logger.warning("morning_data is empty")
                 return
 
+            page_date = (morning_data.get("date") or "").strip()
+            request_url = morning_data.get("request_url")
+            response_url = morning_data.get("response_url")
+            status_code = morning_data.get("status_code")
+            raw_content_len = len(morning_data.get("raw_content", ""))
+
             logger.info(
-                "morning data fetched successfully, date=%s, raw_content_len=%s",
-                morning_data.get("date"),
-                len(morning_data.get("raw_content", "")),
+                "morning data fetched successfully, request_url=%s, response_url=%s, status_code=%s, page_date=%s, raw_content_len=%s",
+                request_url,
+                response_url,
+                status_code,
+                page_date,
+                raw_content_len,
             )
 
             logger.info("start fetching previous day review")
@@ -1605,11 +1637,18 @@ class Application:
                 len(prev_day_review or ""),
             )
 
-            # 优先使用早盘数据中的日期；若缺失，则用当前交易日格式化结果兜底
-            analysis_date = (
-                (morning_data.get("date") or "").strip()
-                or self._format_trade_date(today_trade_date)
-            )
+            if not page_date:
+                logger.warning(
+                    "morning page date is missing, continue with target analysis_date=%s",
+                    analysis_date,
+                )
+            elif page_date != analysis_date:
+                logger.error(
+                    "morning page date mismatch, stop process, analysis_date=%s, page_date=%s",
+                    analysis_date,
+                    page_date,
+                )
+                return
 
             investment_preference_ranking = None
             market_heat_ranking = None
