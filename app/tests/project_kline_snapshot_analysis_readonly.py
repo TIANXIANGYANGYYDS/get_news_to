@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import argparse
@@ -9,7 +10,6 @@ from typing import Any
 from zoneinfo import ZoneInfo
 import sys
 
-# 让脚本在 app/tests 目录下直接执行时，也能正确导入项目根目录下的 app 包
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -21,10 +21,7 @@ from app.config import settings
 from app.db.mongo import client, db
 from app.repo.daily_kline_snapshot import DailyKLineSnapshotRepository
 from app.llm.k_line_analysis_llm import analyze_buy_point
-from app.crawlers.Get_Daily_K_line_data import (
-    EastmoneyAShareCrawler,
-    ShanchenProxyProvider,
-)
+from app.crawlers.Get_Daily_K_line_data import EastmoneyAShareCrawler, ShanchenProxyProvider
 from app.crawlers.proxy_provider import NoProxyProvider
 
 
@@ -33,15 +30,6 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 
 
 def get_a_share_trade_dates(now: datetime | None = None) -> tuple[str, str]:
-    """
-    复用你项目 bootstrap 里的交易日语义：
-    - 9点前：默认仍归到前一个交易日
-    - 9点后：归到当天；若非交易日则回退最近交易日
-
-    返回：
-    - today_trade_date: YYYY-MM-DD
-    - prev_trade_date: YYYY-MM-DD
-    """
     now = now.astimezone(CN_TZ) if now else datetime.now(CN_TZ)
     candidate_date = now.date() if now.hour >= 9 else (now - timedelta(days=1)).date()
     candidate = pd.Timestamp(candidate_date)
@@ -56,10 +44,6 @@ def get_a_share_trade_dates(now: datetime | None = None) -> tuple[str, str]:
 
 
 def build_proxy_provider():
-    """
-    优先复用项目现有代理配置。
-    没配 PROXY_API_KEY 就退化为直连。
-    """
     proxy_api_key = (getattr(settings, "proxy_api_key", "") or "").strip()
     if not proxy_api_key:
         return NoProxyProvider()
@@ -102,11 +86,11 @@ def cleanup_checkpoint(trade_date: str) -> None:
         checkpoint_file.unlink()
 
 
+def _sort_bars_by_trade_date(bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(bars, key=lambda x: str(x.get("trade_date") or ""))
+
+
 def raw_snapshot_row_to_bar(row: dict[str, Any], trade_date: str) -> dict[str, Any] | None:
-    """
-    EastmoneyAShareCrawler.fetch_all() 返回的 raw_rows 是你当前项目里的中文字段格式。
-    这里统一转成 analyze_buy_point 需要的 K 线格式。
-    """
     symbol = str(row.get("代码") or "").strip()
     name = str(row.get("名称") or "").strip()
 
@@ -162,36 +146,22 @@ def mongo_row_to_llm_bar(row: dict[str, Any]) -> dict[str, Any] | None:
 
 async def crawl_current_snapshot_rows(today_trade_date: str) -> list[dict[str, Any]]:
     crawler = build_crawler(today_trade_date)
-    raw_rows, _display_rows = await asyncio.to_thread(
-        crawler.fetch_all,
-        80,
-        True,
-        False,
-    )
+    raw_rows, _display_rows = await asyncio.to_thread(crawler.fetch_all, 80, True, False)
     return raw_rows or []
 
 
-async def fetch_previous_29_bars(
+async def fetch_previous_89_bars(
     repo: DailyKLineSnapshotRepository,
     symbol: str,
     prev_trade_date: str,
 ) -> list[dict[str, Any]]:
-    """
-    只读查询：
-    - 通过 repo.get_recent_bars() 查 prev_trade_date（含）之前最近 29 根
-    - 不写库，不改库
-    """
-    rows = await repo.get_recent_bars(
-        symbol=symbol,
-        end_trade_date=prev_trade_date,
-        limit=29,
-    )
+    rows = await repo.get_recent_bars(symbol=symbol, end_trade_date=prev_trade_date, limit=89)
     bars = []
     for row in rows:
         item = mongo_row_to_llm_bar(row)
         if item is not None:
             bars.append(item)
-    return bars
+    return _sort_bars_by_trade_date(bars)
 
 
 def build_compact_success_item(
@@ -202,22 +172,17 @@ def build_compact_success_item(
     prev_trade_date: str,
     result,
 ) -> dict[str, Any]:
-    input_bars_count = len(history_bars) + 1
-    kline_trade_date_start = history_bars[0]["trade_date"] if history_bars else current_bar["trade_date"]
-    kline_trade_date_end = current_bar["trade_date"]
-
     llm_analysis = result.llm_analysis.model_dump()
-
     return {
         "symbol": current_bar["symbol"],
         "name": current_bar["name"],
         "status": "succeeded",
-        "bars_count": input_bars_count,
+        "bars_count": len(history_bars) + 1,
         "history_bars_count": len(history_bars),
         "today_trade_date": today_trade_date,
         "prev_trade_date": prev_trade_date,
-        "kline_trade_date_start": kline_trade_date_start,
-        "kline_trade_date_end": kline_trade_date_end,
+        "kline_trade_date_start": history_bars[0]["trade_date"] if history_bars else current_bar["trade_date"],
+        "kline_trade_date_end": current_bar["trade_date"],
         "current_snapshot_bar": {
             "trade_date": current_bar["trade_date"],
             "open_price": current_bar["open_price"],
@@ -245,12 +210,7 @@ async def analyze_one_symbol(
             "reason": "current snapshot row missing OHLC fields",
         }
 
-    history_bars = await fetch_previous_29_bars(
-        repo=repo,
-        symbol=current_bar["symbol"],
-        prev_trade_date=prev_trade_date,
-    )
-
+    history_bars = await fetch_previous_89_bars(repo=repo, symbol=current_bar["symbol"], prev_trade_date=prev_trade_date)
     input_bars = history_bars + [
         {
             "trade_date": current_bar["trade_date"],
@@ -260,13 +220,14 @@ async def analyze_one_symbol(
             "close_price": current_bar["close_price"],
         }
     ]
+    input_bars = _sort_bars_by_trade_date(input_bars)
 
-    if len(input_bars) < 20:
+    if len(input_bars) < 30:
         return {
             "symbol": current_bar["symbol"],
             "name": current_bar["name"],
             "status": "skipped_data_insufficient",
-            "reason": f"need >=20 bars, got {len(input_bars)}",
+            "reason": f"need >=30 bars for strict Price Action context, got {len(input_bars)} (history={len(history_bars)} + current=1); target is 90 bars when available",
             "bars_count": len(input_bars),
             "history_bars_count": len(history_bars),
             "today_trade_date": today_trade_date,
@@ -286,7 +247,6 @@ async def analyze_one_symbol(
         bars=input_bars,
         period="日线",
     )
-
     return build_compact_success_item(
         current_bar=current_bar,
         history_bars=history_bars,
@@ -300,24 +260,19 @@ async def run(
     output_json: str | None = None,
     limit_stocks: int | None = None,
     worker_concurrency: int | None = None,
+    buy_only: bool = False,
 ) -> str:
     repo = DailyKLineSnapshotRepository(db)
-
     today_trade_date, prev_trade_date = get_a_share_trade_dates()
     raw_rows = await crawl_current_snapshot_rows(today_trade_date)
 
     if limit_stocks is not None and limit_stocks > 0:
         raw_rows = raw_rows[:limit_stocks]
 
-    output_path = Path(
-        output_json
-        or f"./output/startup_kline_llm_analysis_compact_{today_trade_date.replace('-', '')}.json"
-    )
+    output_path = Path(output_json or f"./output/startup_kline_llm_analysis_compact_{today_trade_date.replace('-', '')}.json")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    concurrency = worker_concurrency or int(
-        getattr(settings, "stock_tech_analysis_worker_concurrency", 6) or 6
-    )
+    concurrency = worker_concurrency or int(getattr(settings, "stock_tech_analysis_worker_concurrency", 6) or 6)
     concurrency = max(1, min(concurrency, 16))
 
     result_payload: dict[str, Any] = {
@@ -328,9 +283,12 @@ async def run(
         "worker_concurrency": concurrency,
         "read_only_mongo": True,
         "compact_json": True,
+        "buy_only": buy_only,
         "items": [],
         "summary": {
             "succeeded": 0,
+            "buy": 0,
+            "not_buy": 0,
             "skipped_data_insufficient": 0,
             "skipped_invalid_current_snapshot": 0,
             "failed": 0,
@@ -356,18 +314,24 @@ async def run(
                     "reason": str(e),
                 }
 
-            result_payload["items"].append(item)
             status = item.get("status") or "failed"
+            if status == "succeeded":
+                conclusion = (((item.get("llm_analysis") or {}).get("conclusion")) or "").strip()
+                if conclusion == "买":
+                    result_payload["summary"]["buy"] += 1
+                elif conclusion == "不买":
+                    result_payload["summary"]["not_buy"] += 1
+
+                if (not buy_only) or conclusion == "买":
+                    result_payload["items"].append(item)
+            else:
+                result_payload["items"].append(item)
+
             result_payload["summary"][status] = result_payload["summary"].get(status, 0) + 1
 
     await asyncio.gather(*[_worker(row) for row in raw_rows])
 
-    result_payload["items"].sort(
-        key=lambda x: (
-            str(x.get("status") or ""),
-            str(x.get("symbol") or ""),
-        )
-    )
+    result_payload["items"].sort(key=lambda x: (str(x.get("status") or ""), str(x.get("symbol") or "")))
 
     with output_path.open("w", encoding="utf-8") as f:
         json.dump(result_payload, f, ensure_ascii=False, indent=2)
@@ -378,25 +342,12 @@ async def run(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="启动时抓取当下全市场股票快照 + 从 Mongo 取前 29 根日K + 调项目现有 Price Action 分析器 + 保存精简 JSON（只读 Mongo）"
+        description="抓取当下全市场股票快照 + 从 Mongo 最多取前89根日K（加当天实时K共90根）+ 调 Price Action 分析器 + 保存 JSON"
     )
-    parser.add_argument(
-        "--output-json",
-        default=None,
-        help="输出 JSON 文件路径，默认 ./output/startup_kline_llm_analysis_compact_YYYYMMDD.json",
-    )
-    parser.add_argument(
-        "--limit-stocks",
-        type=int,
-        default=None,
-        help="只处理前 N 只股票，便于测试",
-    )
-    parser.add_argument(
-        "--worker-concurrency",
-        type=int,
-        default=None,
-        help="并发数，默认复用 settings.stock_tech_analysis_worker_concurrency",
-    )
+    parser.add_argument("--output-json", default=None)
+    parser.add_argument("--limit-stocks", type=int, default=None)
+    parser.add_argument("--worker-concurrency", type=int, default=None)
+    parser.add_argument("--buy-only", action="store_true", help="仅保留 llm_analysis.conclusion == 买 的结果")
     return parser.parse_args()
 
 
@@ -407,6 +358,7 @@ async def _amain() -> None:
             output_json=args.output_json,
             limit_stocks=args.limit_stocks,
             worker_concurrency=args.worker_concurrency,
+            buy_only=args.buy_only,
         )
         print(f"[OK] JSON saved to: {output_path}")
     finally:
