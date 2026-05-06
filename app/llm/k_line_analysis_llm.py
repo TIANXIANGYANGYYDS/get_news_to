@@ -64,6 +64,16 @@ TBTL_MIN_BARS = 10
 TBTL_MIN_LEGS = 2
 MIN_BARS_FOR_ANALYSIS = 30
 
+BULL_LATE_EXTENSION_PCT = 0.08
+BULL_CLIMAX_EXTENSION_PCT = 0.12
+BULL_LATE_EXTENSION_R = 3.0
+BULL_CLIMAX_EXTENSION_R = 4.0
+BULL_LATE_BARS_SINCE_EMA_TOUCH = 8
+BULL_CLIMAX_BARS_SINCE_EMA_TOUCH = 12
+BULL_LATE_BARS_ABOVE_EMA20 = 16
+BULL_CLIMAX_BARS_ABOVE_EMA20 = 18
+BULL_CLIMAX_BAR_RANGE_MULTIPLIER = 1.5
+
 
 class KLineBar(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -264,6 +274,18 @@ class PriceActionBuyPointAnalyzer:
             channel_support_buy = "否"
             ctx["state"] = "trading_range"
 
+        if ctx["state"] == "bull_trend" and ctx.get("trend_phase") == "climax_bull":
+            reasons.append(
+                "当前虽然处于多头背景，但价格明显远离 EMA20，并出现末端大阳线/创新高结构，"
+                "更接近多头高潮而不是低风险买点。"
+            )
+            return self._build_not_buy(
+                channel_name, channel_support_buy, "多头高潮 / 远离EMA20的大阳线", "否", key_candle, "否", "否",
+                expected_entry="等待回调到 EMA20 附近，或等待高潮后形成新的震荡区间下沿再评估。",
+                trigger_condition="至少等待价格回踩 EMA20、形成二次买点，或从高潮转为区间后在下沿出现反转信号。",
+                reason=" ".join(reasons),
+            )
+
         # hard filters from site logic
         if ctx["state"] == "trading_range" and ctx["in_middle"]:
             reasons.append("当前处于震荡区间中部。站点逻辑要求区间中部避免追单，优先等待边缘位置。")
@@ -451,10 +473,13 @@ class PriceActionBuyPointAnalyzer:
         else:
             state = "trading_range"
 
+        bull_phase = self._assess_bull_trend_phase(bars, ema20)
+
         summary = (
             f"背景判断：当前更接近{'多头趋势' if state == 'bull_trend' else '空头趋势' if state == 'bear_trend' else '震荡区间'}；"
             f"Always In 状态为 {always_in}；近20根 bull/bear/tr={bull_trend}/{bear_trend}/{tr_bars}，"
-            f"重叠数={overlap_count}，TBTL={'是' if tbtl['qualified'] else '否'}。"
+            f"重叠数={overlap_count}，TBTL={'是' if tbtl['qualified'] else '否'}；"
+            f"多头阶段={bull_phase['trend_phase']}，EMA乖离={bull_phase['ema_extension_pct']:.2%}/{bull_phase['ema_extension_r']:.2f}R。"
         )
 
         return {
@@ -474,6 +499,13 @@ class PriceActionBuyPointAnalyzer:
             "confusion": confusion,
             "disappointment": disappointment,
             "tbtl": tbtl,
+            "trend_phase": bull_phase["trend_phase"],
+            "ema_extension_pct": bull_phase["ema_extension_pct"],
+            "ema_extension_r": bull_phase["ema_extension_r"],
+            "bars_above_ema_20": bull_phase["bars_above_ema_20"],
+            "bars_since_ema_touch": bull_phase["bars_since_ema_touch"],
+            "is_big_bull_bar": bull_phase["is_big_bull_bar"],
+            "is_climax_bar": bull_phase["is_climax_bar"],
             "summary": summary,
         }
 
@@ -482,6 +514,8 @@ class PriceActionBuyPointAnalyzer:
             return {"qualified": False, "why_not": "不满足顺势做多背景。"}
 
         pullback = self._detect_pullback_structure(bars, ema20, pivots)
+        if ctx.get("trend_phase") == "late_bull" and not pullback["touched_ema20"]:
+            return {"qualified": False, "why_not": "当前处于多头趋势后期，且回调没有有效接近 EMA20；禁止把远离均线的强阳线当作低风险回调买点。"}
         if pullback["degraded_to_range"]:
             return {"qualified": False, "why_not": "当前回调已演变为震荡区间/TBTL，不按简单顺势回调处理。"}
         if not pullback["signal_ready"]:
@@ -522,6 +556,12 @@ class PriceActionBuyPointAnalyzer:
         last_bar = bars[-1]
         prev_bar = bars[-2] if len(bars) >= 2 else bars[-1]
         breakout = self._detect_breakout_structure(bars, ema20, pivots)
+
+        if ctx.get("trend_phase") in {"late_bull", "climax_bull"}:
+            return {
+                "qualified": False,
+                "why_not": "当前处于多头趋势后期/高潮阶段，禁止追涨突破，等待回调到 EMA20 附近或重新形成低风险结构。",
+            }
 
         if not breakout["is_breakout"]:
             return {"qualified": False, "why_not": "当前未形成强势突破结构。"}
@@ -655,6 +695,10 @@ class PriceActionBuyPointAnalyzer:
 
         major_low = self._infer_recent_low(bars[:-1] if len(bars) > 1 else bars)
         held_above_major_low = swing_low >= major_low - 0.3 * avg_range
+        touched_ema20 = any(
+            bars[i].low_price <= ema20[i] + 0.25 * avg_range
+            for i in range(max(0, pullback_start), n)
+        )
         degraded_to_range = duration >= 20 or self._detect_tbtl(bars, pivots)["qualified"]
 
         if wedge["qualified"]:
@@ -679,6 +723,7 @@ class PriceActionBuyPointAnalyzer:
             "prior_high": prior_high,
             "degraded_to_range": degraded_to_range,
             "held_above_major_low": held_above_major_low,
+            "touched_ema20": touched_ema20,
             "wedge": wedge["qualified"],
         }
 
@@ -797,6 +842,101 @@ class PriceActionBuyPointAnalyzer:
         return {"qualified": spacing_ok and flattening}
 
     # ---------- lower-level helpers ----------
+    def _assess_bull_trend_phase(self, bars: List[KLineBar], ema20: List[float]) -> dict[str, Any]:
+        last_bar = bars[-1]
+        last20 = bars[-20:]
+        avg_range_20 = self._avg_range(last20)
+
+        current_close = last_bar.close_price
+        current_ema20 = ema20[-1]
+
+        ema_extension_pct = current_close / max(current_ema20, 1e-9) - 1.0
+        ema_extension_r = (current_close - current_ema20) / max(avg_range_20, 1e-9)
+
+        bars_above_ema_20 = 0
+        for i in range(max(0, len(bars) - 20), len(bars)):
+            if bars[i].close_price > ema20[i]:
+                bars_above_ema_20 += 1
+
+        bars_since_ema_touch = 0
+        for i in range(len(bars) - 1, -1, -1):
+            if bars[i].low_price <= ema20[i]:
+                break
+            bars_since_ema_touch += 1
+
+        bar_range = max(last_bar.high_price - last_bar.low_price, 1e-9)
+        body = abs(last_bar.close_price - last_bar.open_price)
+        body_ratio = body / bar_range
+        close_near_high = last_bar.close_price >= last_bar.high_price - STRONG_CLOSE_NEAR_EXTREME * bar_range
+        new_high_20 = last_bar.high_price >= max(x.high_price for x in last20)
+
+        is_big_bull_bar = (
+            last_bar.close_price > last_bar.open_price
+            and body_ratio >= STRONG_BREAKOUT_BODY_RATIO
+            and bar_range >= avg_range_20 * BULL_CLIMAX_BAR_RANGE_MULTIPLIER
+            and close_near_high
+        )
+
+        is_climax_bar = (
+            is_big_bull_bar
+            and new_high_20
+            and (
+                ema_extension_pct >= BULL_LATE_EXTENSION_PCT
+                or ema_extension_r >= BULL_LATE_EXTENSION_R
+                or bars_since_ema_touch >= BULL_LATE_BARS_SINCE_EMA_TOUCH
+            )
+        )
+
+        climax_bull = (
+            is_climax_bar
+            and (
+                ema_extension_pct >= BULL_CLIMAX_EXTENSION_PCT
+                or ema_extension_r >= BULL_CLIMAX_EXTENSION_R
+                or bars_since_ema_touch >= BULL_CLIMAX_BARS_SINCE_EMA_TOUCH
+                or bars_above_ema_20 >= BULL_CLIMAX_BARS_ABOVE_EMA20
+            )
+        )
+
+        late_bull = (
+            not climax_bull
+            and (
+                ema_extension_pct >= BULL_LATE_EXTENSION_PCT
+                or ema_extension_r >= BULL_LATE_EXTENSION_R
+                or bars_since_ema_touch >= BULL_LATE_BARS_SINCE_EMA_TOUCH
+                or bars_above_ema_20 >= BULL_LATE_BARS_ABOVE_EMA20
+                or is_climax_bar
+            )
+        )
+
+        middle_bull = (
+            not late_bull
+            and not climax_bull
+            and (
+                ema_extension_pct >= 0.03
+                or ema_extension_r >= 1.2
+                or bars_above_ema_20 >= 10
+            )
+        )
+
+        if climax_bull:
+            trend_phase = "climax_bull"
+        elif late_bull:
+            trend_phase = "late_bull"
+        elif middle_bull:
+            trend_phase = "middle_bull"
+        else:
+            trend_phase = "early_bull"
+
+        return {
+            "trend_phase": trend_phase,
+            "ema_extension_pct": ema_extension_pct,
+            "ema_extension_r": ema_extension_r,
+            "bars_above_ema_20": bars_above_ema_20,
+            "bars_since_ema_touch": bars_since_ema_touch,
+            "is_big_bull_bar": is_big_bull_bar,
+            "is_climax_bar": is_climax_bar,
+        }
+
     def _classify_bar_shape(self, prev_bar: KLineBar, bar: KLineBar) -> dict[str, bool]:
         inside = bar.high_price <= prev_bar.high_price and bar.low_price >= prev_bar.low_price
         outside = bar.high_price >= prev_bar.high_price and bar.low_price <= prev_bar.low_price
@@ -948,6 +1088,9 @@ class PriceActionBuyPointAnalyzer:
         lines.append(f"- 近20根 bull/bear/tr：{ctx['bull_trend_bars']}/{ctx['bear_trend_bars']}/{ctx['tr_bars']}")
         lines.append(f"- 重叠K线数：{ctx['overlap_count']}")
         lines.append(f"- 区间位置：{ctx['range_position']:.2f}")
+        lines.append(f"- 多头阶段：{ctx['trend_phase']}")
+        lines.append(f"- EMA20乖离：{ctx['ema_extension_pct']:.2%} / {ctx['ema_extension_r']:.2f}R")
+        lines.append(f"- 距上次触碰EMA20：{ctx['bars_since_ema_touch']}根")
         lines.append(f"- 复杂调整/TBTL：{'是' if ctx['tbtl']['qualified'] else '否'}")
         lines.append("")
         lines.append("二、候选形态：")
